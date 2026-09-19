@@ -1,0 +1,496 @@
+/* ---------------------------------------------------------------------
+   Onigiri — Material 3 token system
+   Seed: grilled-salmon coral, wrapped in a nori-black surface.
+   Roles below follow M3's color-role naming (primary / surface / outline…)
+   so the mapping to components stays standard even though the palette
+   is custom to this app's subject matter.
+------------------------------------------------------------------------ */
+
+:root{
+  color-scheme: dark;
+
+  /* --- color roles (dark, default) --- */
+  --md-primary: #FFB4A2;
+  --md-on-primary: #5C1B0E;
+  --md-primary-container: #7C2E1B;
+  --md-on-primary-container: #FFDBCF;
+
+  --md-secondary: #E4BFAE;
+  --md-on-secondary: #442A1E;
+
+  --md-tertiary: #D7C87A;
+  --md-on-tertiary: #3A3200;
+
+  --nori: #0F0D0B;
+  --md-surface: #16120F;
+  --md-surface-dim: #16120F;
+  --md-surface-bright: #3B332D;
+  --md-surface-container-lowest: #100D0B;
+  --md-surface-container-low: #1E1814;
+  --md-surface-container: #221C18;
+  --md-surface-container-high: #2D2621;
+  --md-surface-container-highest: #38302A;
+  --md-on-surface: #F0E0D9;
+  --md-on-surface-variant: #D6C2B8;
+  --md-outline: #9C8D84;
+  --md-outline-variant: #4F453E;
+
+  --md-error: #FFB4A9;
+  --md-on-error: #680003;
+
+  --shape-xs: 4px;
+  --shape-sm: 8px;
+  --shape-md: 12px;
+  --shape-lg: 16px;
+  --shape-xl: 28px;
+  --shape-full: 999px;
+
+  --elev-1: 0 1px 2px rgba(0,0,0,.45), 0 1px 3px 1px rgba(0,0,0,.3);
+  --elev-2: 0 1px 2px rgba(0,0,0,.5), 0 2px 6px 2px rgba(0,0,0,.35);
+  --elev-3: 0 4px 8px 3px rgba(0,0,0,.4), 0 1px 3px rgba(0,0,0,.5);
+
+  --font-display: 'Lexend', 'Roboto', system-ui, sans-serif;
+  --font-body: 'Roboto', system-ui, sans-serif;
+}
+
+@media (prefers-color-scheme: light){
+  :root{
+    color-scheme: light;
+    --md-primary: #B3401F;
+    --md-on-primary: #FFFFFF;
+    --md-primary-container: #FFDBCF;
+    --md-on-primary-container: #3A0900;
+
+    --md-secondary: #77574C;
+    --md-on-secondary: #FFFFFF;
+
+    --md-tertiary: #666000;
+    --md-on-tertiary: #FFFFFF;
+
+    --nori: #221C18;
+    --md-surface: #FFF8F5;
+    --md-surface-dim: #E8D6CF;
+    --md-surface-bright: #FFF8F5;
+    --md-surface-container-lowest: #FFFFFF;
+    --md-surface-container-low: #FFF1EB;
+    --md-surface-container: #FCEAE2;
+    --md-surface-container-high: #F6E4DD;
+    --md-surface-container-highest: #F1DED7;
+    --md-on-surface: #221A15;
+    --md-on-surface-variant: #53433C;
+    --md-outline: #85736A;
+    --md-outline-variant: #D8C2B8;
+
+    --md-error: #BA1A1A;
+    --md-on-error: #FFFFFF;
+  }
+}
+
+*{ box-sizing: border-box; }
+
+/* Every toggled section/element in this app (setup vs. room view, the
+   settings dialog, status chips, progress bars, icon buttons…) is shown
+   or hidden via the plain HTML `hidden` attribute. Browsers normally
+   handle that for free, but ANY author rule that sets `display` on the
+   same element — even something as ordinary as `.card{ display:flex }`
+   — outranks the browser's built-in `[hidden]{ display:none }` rule in
+   the cascade, regardless of selector specificity. Without this line,
+   every `display:flex`/`display:inline-flex` class below silently wins
+   over `hidden`, so a supposedly-hidden element still renders. This one
+   rule guarantees `hidden` always wins, everywhere, with no need to
+   remember to special-case it per class. */
+[hidden]{ display: none !important; }
+
+html,body{ height:100%; margin:0; }
+body{
+  font-family: var(--font-body);
+  background: var(--md-surface);
+  color: var(--md-on-surface);
+  overflow: hidden;
+}
+button, input{ font-family: inherit; }
+
+#app{ display:flex; flex-direction:column; height:100vh; position:relative; }
+
+/* ---------------------------------- Top bar ---------------------------- */
+.top-bar{
+  display:flex; align-items:center; gap:12px;
+  height:60px; padding:0 16px;
+  background: var(--md-surface);
+  flex-shrink:0;
+  -webkit-app-region: drag;
+  overflow:hidden;
+  transition: height .22s ease, padding .22s ease, opacity .18s ease, border-color .22s ease;
+}
+.top-bar.collapsed{
+  height:0; padding-top:0; padding-bottom:0; opacity:0; border-bottom-color:transparent;
+}
+.top-bar button{ -webkit-app-region: no-drag; }
+.top-bar input{ -webkit-app-region: no-drag; }
+
+.brand{ display:flex; align-items:center; gap:8px; }
+.brand-mark{ width:28px; height:28px; object-fit:contain; border-radius:6px; }
+.brand-name{
+  font-family: var(--font-display);
+  font-weight:600; font-size:19px;
+  letter-spacing: 0.2px;
+  color: var(--md-on-surface);
+}
+.top-bar-status{ display:flex; align-items:center; gap:8px; margin-left:8px; flex:1; }
+
+.chip{
+  display:inline-flex; align-items:center; gap:6px;
+  height:40px; padding:0 14px;
+  border-radius: var(--shape-full);
+  background: var(--md-primary-container);
+  color: var(--md-on-primary-container);
+  font-size:13px; font-weight:500;
+  border:1px solid transparent;
+  font-family:inherit; cursor:default;
+}
+button.chip{ cursor:pointer; }
+button.chip:hover{ filter:brightness(1.1); }
+.chip-quiet{
+  background: transparent;
+  border-color: var(--md-outline-variant);
+  color: var(--md-on-surface-variant);
+}
+
+.icon-btn{
+  width:40px; height:40px; border-radius: var(--shape-full);
+  display:flex; align-items:center; justify-content:center;
+  background: transparent; border:none; cursor:pointer;
+  color: var(--md-on-surface-variant);
+  transition: background-color .15s ease;
+  flex-shrink:0;
+}
+#leave-room-btn{ margin-left:auto; }
+.icon-btn:hover{ background: color-mix(in srgb, var(--md-on-surface) 8%, transparent); }
+.icon-btn svg{ width:22px; height:22px; fill: currentColor; }
+
+/* ---------------------------------- Buttons ----------------------------*/
+.btn{
+  height:40px; padding:0 22px;
+  border-radius: var(--shape-full);
+  border:none; cursor:pointer;
+  font-size:14px; font-weight:600; letter-spacing:.15px;
+  display:inline-flex; align-items:center; justify-content:center; gap:8px;
+  transition: box-shadow .15s ease, background-color .15s ease, opacity .15s ease;
+}
+.btn-small{ height:36px; padding:0 16px; font-size:13px; }
+.btn-filled{ background: var(--md-primary); color: var(--md-on-primary); }
+.btn-filled:hover{ box-shadow: var(--elev-1); }
+.btn-filled:disabled{ opacity:.4; cursor:not-allowed; }
+.btn-tonal{ background: var(--md-primary-container); color: var(--md-on-primary-container); }
+.btn-tonal:hover{ box-shadow: var(--elev-1); }
+.btn-outlined{ background: transparent; color: var(--md-primary); border:1px solid var(--md-outline); }
+.btn-outlined:hover{ background: color-mix(in srgb, var(--md-primary) 8%, transparent); }
+.btn-text{ background: transparent; color: var(--md-primary); padding:0 12px; }
+.btn-text:hover{ background: color-mix(in srgb, var(--md-primary) 8%, transparent); }
+
+/* ---------------------------------- Setup view -------------------------*/
+#view-root{ flex:1; min-height:0; }
+.setup{
+  height:100%; overflow-y:auto;
+  display:flex; flex-direction:column; align-items:center;
+  padding: 64px 24px;
+}
+.setup-hero{ max-width:560px; text-align:center; margin-bottom:40px; }
+.setup-hero h1{
+  font-family: var(--font-display);
+  font-size: 34px; line-height:1.2; font-weight:600; margin:0 0 12px;
+}
+.setup-hero p{ color: var(--md-on-surface-variant); font-size:15px; line-height:1.6; margin:0; }
+
+.setup-notice{
+  max-width:560px; text-align:center; margin: -16px 0 28px;
+  padding:12px 18px; border-radius: var(--shape-md);
+  background: var(--md-tertiary); color: var(--md-on-tertiary);
+  font-size:13px; line-height:1.5;
+}
+.link-btn{
+  background:none; border:none; padding:0; margin:0; cursor:pointer;
+  color:inherit; font:inherit; font-weight:700; text-decoration:underline;
+}
+.setup-cards{ display:flex; gap:20px; flex-wrap:wrap; justify-content:center; max-width:760px; }
+.card{
+  background: var(--md-surface-container);
+  border-radius: var(--shape-lg);
+  padding: 24px;
+  width: 340px;
+}
+.setup-card h2{ font-family: var(--font-display); font-size:18px; margin:0 0 4px; font-weight:600; }
+.card-brand{ display:flex; align-items:center; gap:8px; margin-bottom:4px; }
+.card-brand img{ width:50px; border-radius:6px; object-fit:contain; }
+.card-brand span{ font-family: var(--font-display); font-weight:600; font-size:50px; color: var(--md-on-surface-variant); }
+.card-sub{ color: var(--md-on-surface-variant); font-size:13px; margin:0 0 18px; line-height:1.5; }
+
+/* Standalone settings entry point for the home screen, since the top bar
+   (and its settings button) only exists once you're in a room. Squircle
+   shape distinguishes it from the fully-round icon buttons elsewhere. */
+.squircle-btn{
+  position:absolute; top:20px; right:20px; z-index:20;
+  width:44px; height:44px; border-radius:35%;
+  border:none; background: var(--md-surface-container-high);
+  color: var(--md-on-surface-variant);
+  display:flex; align-items:center; justify-content:center;
+  cursor:pointer; transition: background-color .15s ease;
+}
+.squircle-btn:hover{ background: var(--md-surface-container-highest); }
+.squircle-btn svg{ width:22px; height:22px; fill:currentColor; }
+
+.field{ display:block; margin-bottom:14px; }
+.field > span{ display:block; font-size:12px; color: var(--md-on-surface-variant); margin-bottom:6px; font-weight:500; }
+.field input{
+  width:100%; height:44px; padding:0 14px;
+  border-radius: var(--shape-sm);
+  border:1px solid var(--md-outline);
+  background: var(--md-surface-container-low);
+  color: var(--md-on-surface);
+  font-size:14px;
+}
+.field input:focus{ outline:2px solid var(--md-primary); outline-offset:-1px; border-color:var(--md-primary); }
+.field-row{ display:flex; gap:8px; }
+.field-row input{ flex:1; }
+.field-row .emote-name-input{ flex:0 0 120px; }
+.field-hint{ display:block; font-size:11px; color: var(--md-on-surface-variant); margin-top:6px; line-height:1.6; }
+.field-hint code{
+  background: var(--md-surface-container-highest); border-radius:4px;
+  padding:1px 5px; font-size:10.5px;
+}
+
+.setup-card .btn{ width:100%; margin-top:4px; }
+
+/* ---------------------------------- Room view --------------------------*/
+.room{ height:100%; display:flex; position:relative; }
+.stage{ flex:1; min-width:0; display:flex; flex-direction:column; padding:12px 20px 20px; gap:12px; }
+.bottom-bar{
+  display:flex; flex-direction:column; gap:12px;
+  max-height:600px; opacity:1; overflow:hidden;
+  transition: max-height .22s ease, opacity .18s ease;
+}
+.bottom-bar.collapsed{ max-height:0; opacity:0; }
+.video-wrap{
+  flex:1; min-height:0; position:relative;
+  background: var(--nori);
+  border-radius: var(--shape-lg);
+  overflow:hidden;
+  display:flex; align-items:center; justify-content:center;
+}
+#player{ width:100%; height:100%; display:block; background:#000; }
+#player[src=""], #player:not([src]){ display:none; }
+.video-empty{
+  position:absolute; inset:0;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:10px; color: var(--md-outline);
+  pointer-events:none;
+}
+.video-empty-icon{ width:56px; height:56px; fill: var(--md-outline); opacity:.6; }
+.video-empty p{ font-size:13px; margin:0; }
+
+.stage-toolbar{ display:flex; gap:10px; flex-shrink:0; }
+.url-input{
+  flex:1; height:44px; padding:0 14px;
+  border-radius: var(--shape-sm);
+  border:1px solid var(--md-outline);
+  background: var(--md-surface-container-low);
+  color: var(--md-on-surface);
+  font-size:14px;
+}
+.url-input:focus{ outline:2px solid var(--md-primary); outline-offset:-1px; }
+.queue-count-badge{
+  display:inline-flex; align-items:center; justify-content:center;
+  min-width:18px; height:18px; padding:0 5px; margin-left:6px;
+  border-radius: var(--shape-full);
+  background: var(--md-primary); color: var(--md-on-primary);
+  font-size:11px; font-weight:700;
+}
+
+.progress-row{ display:flex; align-items:center; gap:10px; flex-shrink:0; }
+.progress-track{ flex:1; height:6px; border-radius: var(--shape-full); background: var(--md-surface-container-highest); overflow:hidden; }
+.progress-fill{ height:100%; width:0%; background: var(--md-primary); transition: width .2s ease; }
+#progress-label{ font-size:12px; color: var(--md-on-surface-variant); width:40px; text-align:right; }
+
+/* ---------------------------------- Queue -------------------------------*/
+.queue-panel{
+  flex-shrink:0; max-height:220px; overflow-y:auto;
+  background: var(--md-surface-container-low);
+  border-radius: var(--shape-md);
+  padding:8px;
+}
+.queue-empty{ margin:8px; font-size:12.5px; color: var(--md-on-surface-variant); }
+.queue-list{ display:flex; flex-direction:column; gap:4px; }
+.queue-item{
+  display:flex; align-items:center; gap:10px;
+  padding:8px 10px; border-radius: var(--shape-sm);
+}
+.queue-item.is-current{ background: var(--md-primary-container); }
+.queue-item-index{ font-size:11px; color: var(--md-on-surface-variant); width:18px; flex-shrink:0; }
+.queue-item.is-current .queue-item-index{ color: var(--md-on-primary-container); }
+.queue-item-url{
+  flex:1; min-width:0; font-size:13px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.queue-item-badge{
+  font-size:10.5px; font-weight:600; letter-spacing:.3px; text-transform:uppercase;
+  color: var(--md-on-surface-variant); flex-shrink:0;
+}
+.queue-item-actions{ display:flex; gap:2px; flex-shrink:0; }
+.queue-item-actions button{
+  width:30px; height:30px; border-radius: var(--shape-full); border:none;
+  background:transparent; color: var(--md-on-surface-variant); cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+}
+.queue-item-actions button:hover{ background: color-mix(in srgb, var(--md-on-surface) 10%, transparent); }
+.queue-item-actions svg{ width:16px; height:16px; fill:currentColor; }
+
+/* ---------------------------------- Chat dock (lives on the video) -------*/
+/* A one-time hint shown centered over the top of the video the first time
+   a room is ever entered (persisted — never shown again after that). */
+.chat-hint{
+  position:absolute; top:16px; left:50%; transform:translateX(-50%);
+  background: color-mix(in srgb, var(--nori) 70%, transparent);
+  color:#fff;
+  padding:8px 14px; border-radius: var(--shape-full);
+  font-size:12.5px; box-shadow: var(--elev-1);
+  pointer-events:none; z-index:6;
+  transition: opacity .3s ease;
+}
+.chat-hint kbd{
+  background: rgba(255,255,255,.18); border-radius:4px;
+  padding:1px 6px; font-family:inherit; font-size:11px;
+}
+
+/* The dock sits inside .video-wrap (which is position:relative), bottom-left,
+   above the native <video> control bar. It never blocks or dims the video —
+   only the text itself has a soft backing so it stays legible. */
+.chat-dock{
+  position:absolute; left:16px; bottom:56px; z-index:6;
+  width:380px; max-width:44%;
+  display:flex; flex-direction:column; gap:6px;
+}
+
+.participants-dock{
+  position:absolute; right:16px; bottom:56px; z-index:6;
+  display:flex; flex-direction:column; align-items:flex-end; gap:4px;
+  max-width:40%;
+}
+.participant-pill{
+  display:flex; align-items:center; gap:6px;
+  background: color-mix(in srgb, var(--nori) 55%, transparent);
+  color:#fff; font-size:12px;
+  padding:3px 10px 3px 4px; border-radius: var(--shape-full);
+}
+.participant-dot{
+  width:16px; height:16px; border-radius:50%; flex-shrink:0;
+  background: var(--md-primary);
+}
+.participant-avatar{
+  width:16px; height:16px; border-radius:50%; flex-shrink:0;
+  object-fit:cover;
+}
+
+.chat-dock-log{
+  display:flex; flex-direction:column; justify-content:flex-end;
+  gap:3px; max-height:150px; overflow:hidden;
+  transition: max-height .2s ease;
+}
+.chat-dock.active .chat-dock-log{ max-height:260px; overflow-y:auto; }
+.chat-line{
+  align-self:flex-start; max-width:100%;
+  background: color-mix(in srgb, var(--nori) 55%, transparent);
+  color:#fff; font-size:13px; line-height:1.4;
+  padding:3px 9px; border-radius: var(--shape-sm);
+  word-wrap:break-word;
+  transition: opacity 1s ease;
+}
+.chat-line .name{ font-weight:700; margin-right:5px; }
+.chat-line.system{ font-style:italic; opacity:.85; background:transparent; padding:2px 0; }
+.chat-line.faded{ opacity:0; pointer-events:none; }
+.chat-line img.chat-emoji-img{ width:48px; height:48px; display:block; }
+
+.typing-indicator{
+  font-size:11.5px; color:#fff; font-style:italic;
+  text-shadow: 0 1px 3px rgba(0,0,0,.8);
+  padding-left:2px;
+}
+
+.emoji-tray{
+  display:grid; grid-template-columns: repeat(7, 1fr); gap:4px;
+  padding:8px; border-radius: var(--shape-sm);
+  background: var(--md-surface-container-high);
+  max-height:150px; overflow-y:auto;
+}
+.emoji-tray button{
+  border:none; background:transparent; border-radius: var(--shape-sm);
+  padding:6px; cursor:pointer; display:flex; align-items:center; justify-content:center;
+}
+.emoji-tray button:hover, .emoji-tray button.is-selected{ background: var(--md-surface-container-highest); }
+.emoji-tray button.is-selected{ outline:2px solid var(--md-primary); outline-offset:-2px; }
+.emoji-tray img{ width:22px; height:22px; }
+.emoji-tray-divider{
+  grid-column: 1 / -1; border:none; border-top:1px solid var(--md-outline-variant); margin:2px 0;
+}
+
+.chat-input-row{
+  display:flex; align-items:center; gap:6px;
+  background: color-mix(in srgb, var(--nori) 60%, transparent);
+  border-radius: var(--shape-full);
+  padding:4px 4px 4px 6px;
+}
+.chat-input-row input{
+  flex:1; height:36px; padding:0 10px;
+  border-radius: var(--shape-full);
+  border:none; background:transparent;
+  color:#fff; font-size:13.5px;
+}
+.chat-input-row input::placeholder{ color: rgba(255,255,255,.6); }
+.chat-input-row input:focus{ outline:none; }
+.chat-input-row .icon-btn{ color:#fff; width:34px; height:34px; }
+.chat-input-row .icon-btn svg{ width:19px; height:19px; }
+
+/* ---------------------------------- Custom emoji -------------------------*/
+.custom-emoji-list{ display:flex; flex-wrap:wrap; gap:6px; margin:-6px 0 14px; }
+.custom-emoji-chip{
+  display:inline-flex; align-items:center; gap:6px;
+  background: var(--md-surface-container); border-radius: var(--shape-full);
+  padding:4px 6px 4px 10px; font-size:12px;
+}
+.custom-emoji-chip img{ width:30px; height:30px; }
+.custom-emoji-chip button{
+  width:20px; height:20px; border-radius:50%; border:none; cursor:pointer;
+  background: var(--md-surface-container-high); color: var(--md-on-surface-variant);
+  display:flex; align-items:center; justify-content:center; font-size:13px; line-height:1;
+}
+.custom-emoji-chip button:hover{ background: var(--md-error); color: var(--md-on-error); }
+
+/* ---------------------------------- Settings dialog ---------------------*/
+.dialog-scrim{
+  position:fixed; inset:0; background: rgba(0,0,0,.5);
+  display:flex; align-items:center; justify-content:center;
+  z-index:20;
+}
+.dialog{
+  width:420px; max-width:90vw;
+  background: var(--md-surface-container-high);
+  border-radius: var(--shape-xl);
+  padding:24px; box-shadow: var(--elev-3);
+}
+.dialog h2{ font-family: var(--font-display); margin:0 0 18px; font-size:18px; font-weight:600; }
+.dialog-divider{ border:none; border-top:1px solid var(--md-outline-variant); margin:18px 0; }
+.dialog-actions{ display:flex; justify-content:flex-end; gap:8px; margin-top:6px; }
+
+/* ---------------------------------- Snackbar -----------------------------*/
+.snackbar{
+  position:fixed; left:50%; bottom:24px; transform:translateX(-50%);
+  background: var(--md-surface-container-highest);
+  color: var(--md-on-surface);
+  padding:12px 20px; border-radius: var(--shape-sm);
+  box-shadow: var(--elev-2);
+  font-size:13.5px; z-index:30;
+  max-width:480px; text-align:center;
+}
+
+::-webkit-scrollbar{ width:10px; height:10px; }
+::-webkit-scrollbar-thumb{ background: var(--md-surface-container-highest); border-radius: var(--shape-full); }
+::-webkit-scrollbar-track{ background: transparent; }

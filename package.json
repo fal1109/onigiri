@@ -1,0 +1,37 @@
+{
+  "name": "onigiri",
+  "version": "1.0.0",
+  "description": "Onigiri — watch videos together, perfectly in sync, no latency.",
+  "main": "main.js",
+  "author": "you",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.4",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.onigiri.app",
+    "productName": "Onigiri",
+    "icon": "build/icon.png",
+    "electronVersion": "31.7.7",
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*"
+    ],
+    "linux": {
+      "target": ["AppImage"],
+      "category": "AudioVideo"
+    },
+    "win": {
+      "target": ["nsis"]
+    }
+  }
+}
