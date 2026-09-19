@@ -1,12 +1,9 @@
-# 🍙 onigiri
 
-Watch videos together with zero streaming lag — everyone downloads their own
-local copy of the video, and only the **timestamp, play/pause state, and
-chat** travel between you. Works on Linux and Windows (Electron).
 
-## Requirements
+# onigiri
+watch together app that downloads the videos so no one suffers from internet lag hopefully
 
-Install these once, on **every** machine that will run the app:
+## requirements
 
 1. **Node.js** ≥ 18 — https://nodejs.org
 2. **yt-dlp** — the app shells out to it to download videos from a link.
@@ -18,6 +15,9 @@ Install these once, on **every** machine that will run the app:
    - Linux: `sudo apt install ffmpeg`
    - Windows: https://www.gyan.dev/ffmpeg/builds/ (add the `bin` folder to `PATH`)
 
+## THIS IS AI SLOP. I MADE THIS FOR A GROUP OF FRIENDS AND YOU CAN DO WHATEVER YOU WANT WITH IT.
+
+
 ## Install & run
 
 ```bash
@@ -25,14 +25,9 @@ npm install
 npm start
 ```
 
-## One-time setup: a free Supabase project
+## One-time setup: supabase
 
-Rooms are relayed through Supabase Realtime instead of a direct connection to
-the host's machine, so nobody has to share an IP address, open a port, or set
-up a VPN — hosting works the same whether everyone's on the same Wi-Fi or
-scattered across the country. Every person running the app needs the *same*
-project's credentials plugged into Settings (it's free and takes about two
-minutes):
+everything is managed by supabase [timestamps, play/pause, participants etc.]. every participant needs to have the same set of project url and anon key. one person making it will do, the rest can copy it from the host and they can use it to host and join rooms [limited to that project that is]
 
 1. Go to https://supabase.com, sign up, and create a new project.
 2. Once it's ready, go to **Project Settings → API**.
@@ -42,9 +37,6 @@ minutes):
    pinned message works fine — the anon key is meant to be used from
    client apps, it can't read or change anything by itself).
 
-Nothing else needs configuring on the Supabase side — no tables, no SQL.
-Rooms are just Realtime broadcast/presence channels named after a room code,
-created on the fly.
 
 ## Using it
 
@@ -63,33 +55,10 @@ you'll immediately start downloading whatever's currently playing and land
 at the right timestamp. Anyone in the room can add to the queue, not just
 the host, and anyone can jump to a different queued item or remove one.
 
-### Queue
-
-Click **Queue** (next to Add to queue) to see what's up next. Each item
-shows its status — downloading, now playing, or just waiting — with buttons
-to jump to it immediately or remove it. Adding a link while something's
-already playing just appends it; it'll play automatically once you reach it
-or someone clicks ▶ on it directly.
-
-### Chat
-
-Chat lives right on the video, bottom-left, like a stream-party overlay —
-it never covers most of the screen. Recent messages are always visible;
-press **Enter** anywhere (outside a text field) to reveal the message box
-right below them, type, **Enter** to send, **Esc** to hide the box again
-(the message log itself stays visible either way). You'll see a "so-and-so
-is typing…" indicator while others are composing a message. The first time
-you ever join a room, a small one-time hint appears over the top of the
-video reminding you to press Enter — it won't show again after that.
 
 ### Emotes
 
-Type `:` in the chat box to open an autocomplete list — keep typing to
-narrow it by name, **Tab** to cycle through matches, **Enter** to send the
-highlighted one. If you'd already typed other text, that text is sent as
-its own message first, and the emote follows as a separate message. The
-emoji-face icon next to the chat box also opens the full tray to click
-through instead of typing.
+ctrl+e opens the emote picker
 
 Add your own in Settings → *Custom emotes* (name in the left box, image
 link in the right) or hand-edit the emotes file directly — its path is
@@ -102,12 +71,7 @@ pick up your edits without restarting the app. It's a plain JSON array:
 ]
 ```
 
-Custom emotes show up correctly for *everyone* in the room when you send
-one — not just people who've added the same emote locally — since the app
-just recognizes "this whole message is an image link" and renders it
-inline, regardless of whose custom set it came from.
-
-### Discord logging
+### Discord logging [optional]
 
 Open **Settings** (gear icon, top right) and paste a Discord webhook URL.
 To get one: in Discord, go to the target channel → *Edit Channel* → *Integrations*
@@ -140,49 +104,3 @@ directly into the field).
   single point of failure if whoever first created the room has since left.
 - Chat is relayed to Discord only by whoever's hosting the room, so you don't
   get duplicate posts if multiple people have a webhook configured.
-
-## Packaging a distributable build
-
-```bash
-npm run dist
-```
-Produces an AppImage on Linux / an NSIS installer on Windows via
-`electron-builder` (build each on its own OS, or set up cross-compilation
-yourself).
-
-## Troubleshooting
-
-**Settings dialog / "Browse" freezes the whole app (Wayland, especially
-Hyprland/CachyOS):** this is `xdg-desktop-portal` hanging, not the app itself.
-The Browse button asks your desktop for its native folder picker, and on some
-Wayland compositors that portal process can hang or render invisibly. A few
-options, in order of effort:
-
-- Just type the folder path directly into the "Video download folder" field
-  instead of clicking Browse — no picker involved.
-- If it's already stuck: `pkill -9 -f onigiri`, then
-  `systemctl --user restart xdg-desktop-portal xdg-desktop-portal-hyprland xdg-desktop-portal-gtk`,
-  then relaunch.
-- Run the app with `GTK_USE_PORTAL=0 npm start` — this makes GTK use its own
-  file chooser instead of going through the portal, which tends to be more
-  reliable on Hyprland.
-
-As of this version the app no longer blocks on a hung file picker (the dialog
-now has a 15-second timeout and won't freeze the window), and the settings
-dialog can always be closed with the Cancel button, Escape, or a click
-outside it, regardless of what Browse is doing.
-
-**Settings won't save / app is unusable:** your config is a plain JSON file
-you can edit directly — `~/.config/onigiri/onigiri-config.json` on Linux
-(`%APPDATA%\onigiri\onigiri-config.json` on Windows). Close the app first.
-Emotes live in a separate file next to it, `onigiri-emotes.json` — see
-Settings → *Custom emotes* for the exact path, or the Emotes section above.
-
-## Notes / known limits
-
-- Everyone needs their own `yt-dlp`-downloadable link (YouTube, direct MP4s,
-  and hundreds of other sites yt-dlp supports).
-- If a video is huge, participants will be waiting on their own download —
-  there's a progress bar, but no way around the wait besides a faster
-  connection or a smaller/shorter source.
-- This is a fresh build, not battle-tested at scale — expect rough edges.
