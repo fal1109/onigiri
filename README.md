@@ -3,17 +3,19 @@
 # onigiri
 watch together app that downloads the videos so no one suffers from internet lag hopefully
 
-## requirements
+## requirement
 
-1. **Node.js** ≥ 18 — https://nodejs.org
-2. **yt-dlp** — the app shells out to it to download videos from a link.
+1. **yt-dlp** — the app shells out to it to download videos from a link.
    - Linux: `sudo apt install yt-dlp` (or `pip install -U yt-dlp`)
    - Windows: download `yt-dlp.exe` from https://github.com/yt-dlp/yt-dlp/releases
      and put it somewhere on your `PATH` (or next to the app).
-3. **ffmpeg** — needed by yt-dlp to merge separate video/audio streams into
+2. **ffmpeg** — needed by yt-dlp to merge separate video/audio streams into
    one file.
    - Linux: `sudo apt install ffmpeg`
    - Windows: https://www.gyan.dev/ffmpeg/builds/ (add the `bin` folder to `PATH`)
+
+
+
 
 ## THIS IS AI SLOP. I MADE THIS FOR A GROUP OF FRIENDS AND YOU CAN DO WHATEVER YOU WANT WITH IT.
 
