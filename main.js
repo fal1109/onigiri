@@ -25,7 +25,13 @@ function defaultConfig() {
     supabaseUrl: '',
     supabaseKey: '',
     hasSeenChatHint: false,
-    avatarUrl: ''
+    avatarUrl: '',
+    themeMode: 'dark',
+    colorScheme: 'salmon',
+    backgroundUrl: '',
+    backgroundBlur: 24,
+    backgroundParallax: true,
+    customTheme: null
   };
 }
 
@@ -133,7 +139,7 @@ let channel = null;
 let role = null;              // 'host' | 'client' | null
 let currentUsername = '';
 let sawInitialPresenceSync = false;
-let roomState = { isPlaying: false, time: 0, queue: [], queueIndex: -1 };
+let roomState = { isPlaying: false, time: 0, queue: [], queueIndex: -1, djUsernames: [] };
 
 function getSupabaseClient() {
   if (!config.supabaseUrl || !config.supabaseKey) {
@@ -156,11 +162,19 @@ function randomRoomCode() {
 
 function handleBroadcast(type, payload) {
   switch (type) {
-    case 'player':
+    case 'player': {
+      // Ignore playback events meant for a different video than the one we
+      // actually have loaded — without this, a participant stuck on an old
+      // video (e.g. their download of the current one failed) can still
+      // seek/play/pause everyone else's player out from under them.
+      const localCurrent = roomState.queue[roomState.queueIndex];
+      const localItemId = localCurrent ? localCurrent.id : null;
+      if (payload.queueItemId !== localItemId) break;
       roomState.isPlaying = payload.action === 'play' ? true : payload.action === 'pause' ? false : roomState.isPlaying;
       roomState.time = payload.time;
       send('net:remote-player-event', payload);
       break;
+    }
     case 'queue-update':
       roomState.queue = payload.queue;
       roomState.queueIndex = payload.queueIndex;
@@ -175,6 +189,10 @@ function handleBroadcast(type, payload) {
       break;
     case 'typing-stop':
       send('net:typing-stop', payload);
+      break;
+    case 'dj-update':
+      roomState.djUsernames = payload.djUsernames;
+      send('net:dj', payload);
       break;
     default:
       break;
@@ -198,6 +216,7 @@ function subscribeToRoom(code, username) {
     ch.on('broadcast', { event: 'chat' }, ({ payload }) => handleBroadcast('chat', payload));
     ch.on('broadcast', { event: 'typing' }, ({ payload }) => handleBroadcast('typing', payload));
     ch.on('broadcast', { event: 'typing-stop' }, ({ payload }) => handleBroadcast('typing-stop', payload));
+    ch.on('broadcast', { event: 'dj-update' }, ({ payload }) => handleBroadcast('dj-update', payload));
 
     // Any currently-connected peer can answer a sync-request with its own
     // local mirror of the room state — no single point of failure if the
@@ -205,7 +224,7 @@ function subscribeToRoom(code, username) {
     ch.on('broadcast', { event: 'sync-request' }, () => {
       ch.send({
         type: 'broadcast', event: 'sync-response',
-        payload: { time: roomState.time, isPlaying: roomState.isPlaying, queue: roomState.queue, queueIndex: roomState.queueIndex }
+        payload: { time: roomState.time, isPlaying: roomState.isPlaying, queue: roomState.queue, queueIndex: roomState.queueIndex, djUsernames: roomState.djUsernames }
       });
     });
     ch.on('broadcast', { event: 'sync-response' }, ({ payload }) => send('net:sync', payload));
@@ -264,9 +283,10 @@ function broadcastEvent(event, payload) {
 }
 
 function sendPlayerEvent(action, time) {
+  const currentItem = roomState.queue[roomState.queueIndex];
   roomState.isPlaying = action === 'play' ? true : action === 'pause' ? false : roomState.isPlaying;
   roomState.time = time;
-  broadcastEvent('player', { action, time, ts: Date.now() });
+  broadcastEvent('player', { action, time, ts: Date.now(), queueItemId: currentItem ? currentItem.id : null });
 }
 
 function broadcastQueue() {
@@ -321,6 +341,19 @@ function sendChat(username, text) {
 function sendTyping(username) { broadcastEvent('typing', { username }); }
 function sendTypingStop(username) { broadcastEvent('typing-stop', { username }); }
 
+// Only the host may grant/revoke DJ (playback-control) status. Silently
+// no-ops for anyone else — the IPC handler below is the actual enforcement
+// point, this is just the shared implementation.
+function toggleDj(targetUsername) {
+  if (role !== 'host') return;
+  const idx = roomState.djUsernames.indexOf(targetUsername);
+  if (idx === -1) roomState.djUsernames.push(targetUsername);
+  else roomState.djUsernames.splice(idx, 1);
+  const payload = { djUsernames: roomState.djUsernames };
+  broadcastEvent('dj-update', payload);
+  send('net:dj', payload);
+}
+
 function requestSync() {
   broadcastEvent('sync-request', {});
 }
@@ -332,7 +365,7 @@ function stopEverything() {
     channel = null;
   }
   role = null;
-  roomState = { isPlaying: false, time: 0, queue: [], queueIndex: -1 };
+  roomState = { isPlaying: false, time: 0, queue: [], queueIndex: -1, djUsernames: [] };
 }
 
 // ---------------------------------------------------------------------------
@@ -479,6 +512,35 @@ ipcMain.handle('dialog:choose-dir', async () => {
   return result.filePaths[0];
 });
 
+const THEME_KEYS = [
+  '--md-primary', '--md-on-primary', '--md-primary-container', '--md-on-primary-container',
+  '--md-secondary', '--md-on-secondary', '--md-tertiary', '--md-on-tertiary'
+];
+const HEX_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
+ipcMain.handle('theme:import', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    filters: [{ name: 'Theme JSON', extensions: ['json'] }]
+  });
+  if (result.canceled || !result.filePaths[0]) return { ok: false, canceled: true };
+
+  try {
+    const raw = fs.readFileSync(result.filePaths[0], 'utf-8');
+    const parsed = JSON.parse(raw);
+    const theme = {};
+    for (const key of THEME_KEYS) {
+      if (typeof parsed[key] === 'string' && HEX_RE.test(parsed[key])) theme[key] = parsed[key];
+    }
+    if (Object.keys(theme).length === 0) {
+      throw new Error(`No recognized color keys found. Expected hex values for keys like "${THEME_KEYS[0]}".`);
+    }
+    return { ok: true, theme };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
 ipcMain.handle('room:host', async (_e, { username }) => {
   try {
     const { code } = await hostRoom(username);
@@ -526,6 +588,11 @@ ipcMain.handle('chat:send', (_e, { username, text }) => {
 });
 
 ipcMain.handle('chat:typing', (_e, { username }) => { sendTyping(username); return { ok: true }; });
+ipcMain.handle('dj:toggle', (_e, { username }) => {
+  if (role !== 'host') throw new Error('Only the host can change DJ permissions.');
+  toggleDj(username);
+  return { ok: true };
+});
 ipcMain.handle('chat:typing-stop', (_e, { username }) => { sendTypingStop(username); return { ok: true }; });
 
 ipcMain.handle('sync:request', () => {

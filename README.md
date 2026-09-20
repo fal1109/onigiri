@@ -66,10 +66,31 @@ the host, and anyone can jump to a different queued item or remove one.
 ### Queue
 
 Click **Queue** (next to Add to queue) to see what's up next. Each item
-shows its status — downloading, now playing, or just waiting — with buttons
-to jump to it immediately or remove it. Adding a link while something's
-already playing just appends it; it'll play automatically once you reach it
-or someone clicks ▶ on it directly.
+shows its status — downloading, pre-loading, ready, now playing, or failed —
+with buttons to jump to it immediately or remove it. Whatever's one slot
+ahead of the current item downloads quietly in the background while you
+watch, so skipping ahead (the ⏭ button, or jumping to any item) is usually
+instant instead of waiting on a fresh download.
+
+If a download fails for you specifically (a dead link, a site blocking your
+IP, etc.) — it only affects you. The failed item gets a **Failed** badge and
+a retry button; everyone else keeps watching normally.
+
+### Playback control & DJs
+
+By default, only the host can actually control playback (play/pause/seek/
+skip) — everyone else is a passive viewer with no controls on their player
+at all. The host can promote specific people to **DJ** by clicking their
+chip in the participants list (top bar), which gives them the same control.
+Click again to revoke it. Queue management (adding/removing/jumping to a
+link) stays open to everyone regardless of DJ status — only playback state
+itself is gated.
+
+### Participants
+
+Shown in the top bar, just left of Settings, as small avatar/color-dot
+chips — hover one to see their name. If you're the host, click a chip to
+toggle that person's DJ status.
 
 ### Chat
 
@@ -84,12 +105,10 @@ video reminding you to press Enter — it won't show again after that.
 
 ### Emotes
 
-Type `:` in the chat box to open an autocomplete list — keep typing to
-narrow it by name, **Tab** to cycle through matches, **Enter** to send the
-highlighted one. If you'd already typed other text, that text is sent as
-its own message first, and the emote follows as a separate message. The
-emoji-face icon next to the chat box also opens the full tray to click
-through instead of typing.
+Press **Ctrl+E** to open the emote tray, **Tab** to cycle through it,
+**Enter** to send the highlighted one — your own custom emotes are listed
+first, ahead of the built-ins. The emoji-face icon next to the chat box
+opens the same tray to click through instead.
 
 Add your own in Settings → *Custom emotes* (name in the left box, image
 link in the right) or hand-edit the emotes file directly — its path is
@@ -106,6 +125,36 @@ Custom emotes show up correctly for *everyone* in the room when you send
 one — not just people who've added the same emote locally — since the app
 just recognizes "this whole message is an image link" and renders it
 inline, regardless of whose custom set it came from.
+
+### Appearance
+
+Settings → *Appearance* is its own section now (Settings is split into a
+left-hand list of sections rather than one long page):
+
+- **Theme** — Dark or Light, an explicit toggle rather than following the OS.
+- **Color theme** — eight presets to click through (Asuka, the original
+  color; Lilith; Sartre; Fouco; Kallen; Green; Morphean Paradox; Miku), or
+  bring your own by importing a flat JSON file of hex colors:
+  ```json
+  { "--md-primary": "#B3401F", "--md-primary-container": "#FFDBCF" }
+  ```
+  Recognized keys: `--md-primary`, `--md-on-primary`, `--md-primary-container`,
+  `--md-on-primary-container`, `--md-secondary`, `--md-on-secondary`,
+  `--md-tertiary`, `--md-on-tertiary`. Each preset is really just one seed
+  color — every other color (surfaces, the settings modal, the top/bottom
+  bars, the cookie mascot) is derived from it automatically, and adapts if
+  you also switch Dark/Light. An imported JSON theme only overrides the
+  accent tokens above, same as before — it won't recolor surfaces.
+  *Reset to default* clears back to the plain built-in look.
+- **Background image URL** — sets a background on the home screen, shown
+  blurred behind the cards so they stay readable over any image. Leave it
+  blank and a rotating cookie mascot shows in the corner instead — the two
+  are mutually exclusive, and both update live as you type/adjust, not only
+  after hitting Save.
+- **Background blur** — how strong that blur is, 0–50px.
+- **Cursor-based parallax** — the background shifts slightly opposite your
+  cursor while you're on the home screen. Only does anything when a
+  background image is actually set.
 
 ### Discord logging
 
@@ -132,12 +181,17 @@ directly into the field).
 - Everyone connects outbound to Supabase Realtime (no inbound ports needed on
   anyone's machine) and joins a broadcast channel named after the room code.
   Only small JSON messages travel over it: `play`, `pause`, `seek`, the
-  queue, chat, and typing status.
+  queue, DJ list, chat, and typing status.
 - The room's video state *is* the queue — a list of links plus which one is
   current. Whoever's connected mirrors that queue locally, so when someone
   joins mid-session, any already-connected peer can answer "here's the
   queue, here's the current time, here's whether it's playing" — there's no
   single point of failure if whoever first created the room has since left.
+- Every playback event carries the id of the video it's for. If your player
+  is showing a different video than whoever sent the event (say, their
+  download of the current one failed and they're stuck on an old one), it's
+  silently ignored — one person's stuck download can't drag everyone else's
+  timestamp around.
 - Chat is relayed to Discord only by whoever's hosting the room, so you don't
   get duplicate posts if multiple people have a webhook configured.
 

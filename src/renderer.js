@@ -54,10 +54,15 @@ let username = '';
 let suppressPlayerEvents = false;
 let currentVideoUrl = null;
 let downloadingUrl = null;
+let downloadError = null; // { itemId, url, message } — local to this client only
+const predownloadedPaths = new Map(); // url -> local file path, ready to use instantly
+const predownloadingUrls = new Set();
 let roomQueue = [];
 let roomQueueIndex = -1;
 let typingUsers = new Set();
 let typingStopTimer = null;
+let djUsernames = [];
+let lastParticipants = [];
 
 // emoji tray keyboard navigation state (Ctrl+E to open, Tab to cycle)
 let trayOpen = false;
@@ -66,6 +71,7 @@ let traySelectedIndex = 0;
 
 const $ = (sel) => document.querySelector(sel);
 const allEmotes = () => [...BUILTIN_EMOTES, ...customEmotes];
+const hasControlPermission = () => role === 'host' || djUsernames.includes(username);
 
 // ---------------------------------------------------------------------- init
 (async function init() {
@@ -74,14 +80,275 @@ const allEmotes = () => [...BUILTIN_EMOTES, ...customEmotes];
   $('#host-username').value = config.username;
   $('#join-username').value = config.username;
 
+  applyAppearance();
   buildEmojiTray();
   wireSetup();
   wireRoom();
   wireChat();
   wireSettings();
+  wireAppearance();
   wireNetworkEvents();
   refreshConfigNotice();
 })();
+
+// ---- Theme generation: every theme is just a seed hex color. Surfaces,
+// buttons, and everything else are all derived from it algorithmically, so
+// picking a theme recolors the whole app — settings modal, top/bottom bars,
+// main background — not just accent buttons like before.
+function hexToHsl(hex) {
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h = 0, s = 0;
+  const l = (max + min) / 2;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    switch (max) {
+      case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+      case g: h = (b - r) / d + 2; break;
+      default: h = (r - g) / d + 4;
+    }
+    h /= 6;
+  }
+  return [h * 360, s * 100, l * 100];
+}
+
+function hslToHex(h, s, l) {
+  h /= 360; s /= 100; l /= 100;
+  const hue2rgb = (p, q, t) => {
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  let r, g, b;
+  if (s === 0) { r = g = b = l; }
+  else {
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    r = hue2rgb(p, q, h + 1 / 3);
+    g = hue2rgb(p, q, h);
+    b = hue2rgb(p, q, h - 1 / 3);
+  }
+  const toHex = (x) => Math.round(x * 255).toString(16).padStart(2, '0');
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+function buildThemeTokens(seedHex, mode) {
+  const [hue, satPct, seedL] = hexToHsl(seedHex);
+  const dark = mode !== 'light';
+  const onSeed = seedL > 60 ? '#1A1A1A' : '#FFFFFF';
+
+  let primary, onPrimary, primaryContainer, onPrimaryContainer;
+  if (dark) {
+    primary = seedHex;
+    onPrimary = onSeed;
+    primaryContainer = hslToHex(hue, Math.min(satPct, 55), Math.max(seedL - 22, 14));
+    onPrimaryContainer = hslToHex(hue, Math.min(satPct, 40), Math.min(seedL + 35, 92));
+  } else {
+    primary = hslToHex(hue, Math.min(satPct, 65), Math.min(seedL, 42));
+    onPrimary = '#FFFFFF';
+    primaryContainer = hslToHex(hue, Math.min(satPct, 45), 88);
+    onPrimaryContainer = hslToHex(hue, Math.min(satPct, 55), 20);
+  }
+
+  const secondary = hslToHex((hue + 20) % 360, Math.max(satPct * 0.4, 15), dark ? 78 : 35);
+  const tertiary = hslToHex((hue + 300) % 360, Math.max(satPct * 0.5, 20), dark ? 75 : 38);
+
+  // Low-saturation neutrals, tinted toward the seed hue — this is what
+  // makes surfaces (bars, modals, the main background) shift with the
+  // theme instead of staying a fixed gray regardless of which one is picked.
+  const ns = 10;
+  const surface = dark ? {
+    '--nori': hslToHex(hue, ns, 6),
+    '--md-surface': hslToHex(hue, ns, 8),
+    '--md-surface-dim': hslToHex(hue, ns, 8),
+    '--md-surface-bright': hslToHex(hue, ns, 22),
+    '--md-surface-container-lowest': hslToHex(hue, ns, 6),
+    '--md-surface-container-low': hslToHex(hue, ns, 11),
+    '--md-surface-container': hslToHex(hue, ns, 13),
+    '--md-surface-container-high': hslToHex(hue, ns, 17),
+    '--md-surface-container-highest': hslToHex(hue, ns, 21),
+    '--md-on-surface': hslToHex(hue, 12, 92),
+    '--md-on-surface-variant': hslToHex(hue, 10, 80),
+    '--md-outline': hslToHex(hue, 8, 58),
+    '--md-outline-variant': hslToHex(hue, 10, 28)
+  } : {
+    '--nori': hslToHex(hue, ns, 14),
+    '--md-surface': hslToHex(hue, ns, 97),
+    '--md-surface-dim': hslToHex(hue, ns, 88),
+    '--md-surface-bright': hslToHex(hue, ns, 97),
+    '--md-surface-container-lowest': hslToHex(hue, ns, 100),
+    '--md-surface-container-low': hslToHex(hue, ns, 95),
+    '--md-surface-container': hslToHex(hue, ns, 93),
+    '--md-surface-container-high': hslToHex(hue, ns, 91),
+    '--md-surface-container-highest': hslToHex(hue, ns, 89),
+    '--md-on-surface': hslToHex(hue, 14, 12),
+    '--md-on-surface-variant': hslToHex(hue, 10, 32),
+    '--md-outline': hslToHex(hue, 8, 48),
+    '--md-outline-variant': hslToHex(hue, 10, 80)
+  };
+
+  return {
+    '--md-primary': primary, '--md-on-primary': onPrimary,
+    '--md-primary-container': primaryContainer, '--md-on-primary-container': onPrimaryContainer,
+    '--md-secondary': secondary, '--md-on-secondary': dark ? '#2A2118' : '#FFFFFF',
+    '--md-tertiary': tertiary, '--md-on-tertiary': dark ? '#231C00' : '#FFFFFF',
+    ...surface
+  };
+}
+
+const THEME_KEYS = [
+  '--md-primary', '--md-on-primary', '--md-primary-container', '--md-on-primary-container',
+  '--md-secondary', '--md-on-secondary', '--md-tertiary', '--md-on-tertiary',
+  '--nori', '--md-surface', '--md-surface-dim', '--md-surface-bright',
+  '--md-surface-container-lowest', '--md-surface-container-low', '--md-surface-container',
+  '--md-surface-container-high', '--md-surface-container-highest',
+  '--md-on-surface', '--md-on-surface-variant', '--md-outline', '--md-outline-variant'
+];
+
+// Preset themes are just a seed color each — recomputed through the same
+// generator above, so they automatically produce sensible dark AND light
+// variants rather than needing both hand-authored.
+const PRESET_THEMES = {
+  asuka: '#B3401F', // the app's original color, kept and just renamed
+  lilith: '#873E47',
+  sartre: '#FFEC65',
+  fouco: '#83FCFF',
+  kallen: '#F99FE3',
+  green: '#AEFA87',
+  morphean: '#465189',
+  miku: '#37C0D1'
+};
+
+// config.customTheme is either: null (no theme, pure CSS defaults), a seed
+// hex string (a preset — regenerated per current dark/light mode), or a
+// full {--token: value} object (an imported theme JSON, fixed regardless
+// of mode, since hand-authored files only cover accent tokens).
+function applyCustomTheme(theme) {
+  const root = document.documentElement;
+  THEME_KEYS.forEach((k) => root.style.removeProperty(k));
+  if (!theme) return;
+  const tokens = typeof theme === 'string'
+    ? buildThemeTokens(theme, config.themeMode === 'light' ? 'light' : 'dark')
+    : theme;
+  Object.entries(tokens).forEach(([k, v]) => { if (v) root.style.setProperty(k, v); });
+}
+
+function applyAppearance() {
+  document.documentElement.dataset.theme = config.themeMode || 'dark';
+  applyCustomTheme(config.customTheme);
+
+  const bg = $('#setup-bg');
+  const cookie = $('#setup-cookie');
+  // cookie is an <svg> element — SVGElement doesn't reliably support the
+  // .hidden IDL property the way HTMLElement does, so setting it directly
+  // can silently no-op. setAttribute/removeAttribute always works.
+  if (config.backgroundUrl) {
+    bg.style.backgroundImage = `url("${config.backgroundUrl}")`;
+    bg.style.filter = `blur(${config.backgroundBlur ?? 24}px)`;
+    bg.hidden = false;
+    cookie.setAttribute('hidden', '');
+  } else {
+    bg.hidden = true;
+    cookie.removeAttribute('hidden');
+  }
+  setBackgroundTransform(0, 0);
+}
+
+// scale(1.1) keeps the blurred edges from ever showing the layer's own
+// boundary; the translate is the parallax offset (0,0 when disabled/idle).
+function setBackgroundTransform(x, y) {
+  $('#setup-bg').style.transform = `scale(1.1) translate(${x}px, ${y}px)`;
+}
+
+function handleParallaxMouseMove(e) {
+  if (!config.backgroundParallax || !config.backgroundUrl || $('#setup-view').hidden) return;
+  const x = (e.clientX / window.innerWidth - 0.5) * 30;
+  const y = (e.clientY / window.innerHeight - 0.5) * 30;
+  setBackgroundTransform(x, y);
+}
+
+function refreshAppearanceButtons() {
+  const mode = config.themeMode || 'dark';
+  $('#theme-toggle').querySelectorAll('button').forEach((btn) => {
+    btn.classList.toggle('is-active', btn.dataset.themeValue === mode);
+  });
+
+  $('#scheme-swatches').querySelectorAll('.scheme-swatch').forEach((btn) => {
+    btn.classList.toggle('is-active', PRESET_THEMES[btn.dataset.preset] === config.customTheme);
+  });
+}
+
+function wireAppearance() {
+  document.addEventListener('mousemove', handleParallaxMouseMove);
+
+  $('#settings-nav').addEventListener('click', (e) => {
+    const btn = e.target.closest('.settings-nav-item');
+    if (!btn) return;
+    $('#settings-nav').querySelectorAll('.settings-nav-item').forEach((b) => b.classList.toggle('is-active', b === btn));
+    $('.settings-panels').querySelectorAll('.settings-panel').forEach((p) => { p.hidden = p.dataset.panel !== btn.dataset.panel; });
+  });
+
+  $('#theme-toggle').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-theme-value]');
+    if (!btn) return;
+    config = await window.onigiri.setConfig({ themeMode: btn.dataset.themeValue });
+    applyAppearance();
+    refreshAppearanceButtons();
+  });
+
+  $('#scheme-swatches').addEventListener('click', async (e) => {
+    const btn = e.target.closest('.scheme-swatch');
+    if (!btn) return;
+    const preset = PRESET_THEMES[btn.dataset.preset] ?? null;
+    config = await window.onigiri.setConfig({ customTheme: preset });
+    applyAppearance();
+    refreshAppearanceButtons();
+  });
+
+  $('#import-theme-btn').addEventListener('click', async () => {
+    const res = await window.onigiri.importTheme();
+    if (res.canceled) return;
+    if (!res.ok) { toast(res.error || "Couldn't read that theme file."); return; }
+    config = await window.onigiri.setConfig({ customTheme: res.theme });
+    applyAppearance();
+    toast('Theme imported');
+  });
+
+  $('#reset-theme-btn').addEventListener('click', async () => {
+    config = await window.onigiri.setConfig({ customTheme: null });
+    applyAppearance();
+    toast('Theme reset');
+  });
+
+  $('#setting-blur-amount').addEventListener('input', (e) => {
+    $('#blur-amount-label').textContent = `${e.target.value}px`;
+    $('#setup-bg').style.filter = `blur(${e.target.value}px)`;
+  });
+
+  // Live preview so the cookie/background swap (and blur) reflect what's
+  // typed immediately, rather than only after Save — that mismatch is what
+  // made the cookie look like it was wrongly showing "while" a background
+  // was set, when really it just hadn't been saved yet.
+  $('#setting-background-url').addEventListener('input', (e) => {
+    const url = e.target.value.trim();
+    const bg = $('#setup-bg');
+    const cookie = $('#setup-cookie');
+    if (url) {
+      bg.style.backgroundImage = `url("${url}")`;
+      bg.hidden = false;
+      cookie.setAttribute('hidden', '');
+    } else {
+      bg.hidden = true;
+      cookie.removeAttribute('hidden');
+    }
+  });
+}
 
 function refreshConfigNotice() {
   const notice = $('#setup-config-notice');
@@ -136,6 +403,7 @@ function enterRoom() {
   $('#leave-room-btn').hidden = false;
   $('.top-bar').hidden = false;
   $('#setup-settings-btn').hidden = true;
+  updateVideoControls();
   maybeShowChatHint();
   refreshBarVisibility();
 }
@@ -159,14 +427,23 @@ async function leaveRoom() {
   role = null;
   currentVideoUrl = null;
   downloadingUrl = null;
+  downloadError = null;
   roomQueue = [];
   roomQueueIndex = -1;
   typingUsers = new Set();
+  djUsernames = [];
+  lastParticipants = [];
+  predownloadedPaths.clear();
+  predownloadingUrls.clear();
+  $('#top-participants').innerHTML = '';
 
   const video = $('#player');
   video.pause();
   video.removeAttribute('src');
   video.load();
+  video.controls = false;
+  $('#video-empty').querySelector('p').textContent = 'Add a video to start';
+  $('#video-empty').style.display = 'flex';
 
   fadeTimers.forEach((t) => clearTimeout(t));
   fadeTimers.clear();
@@ -174,7 +451,6 @@ async function leaveRoom() {
   closeChatInput();
   $('#queue-panel').hidden = true;
   $('#room-chip').hidden = true;
-  $('#participants-dock').hidden = true;
   $('#leave-room-btn').hidden = true;
   $('#room-view').hidden = true;
   $('#setup-view').hidden = false;
@@ -247,6 +523,11 @@ function wireRoom() {
     if (e.key === 'Enter') { e.preventDefault(); $('#add-queue-btn').click(); }
   });
 
+  $('#skip-btn').addEventListener('click', () => {
+    if (!hasControlPermission()) { toast("Only the host or a DJ can skip"); return; }
+    window.onigiri.queueNext();
+  });
+
   $('#queue-toggle-btn').addEventListener('click', () => {
     const panel = $('#queue-panel');
     panel.hidden = !panel.hidden;
@@ -282,7 +563,8 @@ function renderQueueList() {
 
   roomQueue.forEach((item, idx) => {
     const row = document.createElement('div');
-    row.className = 'queue-item' + (idx === roomQueueIndex ? ' is-current' : '');
+    const failed = downloadError && downloadError.itemId === item.id;
+    row.className = 'queue-item' + (idx === roomQueueIndex ? ' is-current' : '') + (failed ? ' is-failed' : '');
 
     const index = document.createElement('span');
     index.className = 'queue-item-index';
@@ -296,12 +578,25 @@ function renderQueueList() {
     const badge = document.createElement('span');
     badge.className = 'queue-item-badge';
     if (item.url === downloadingUrl) badge.textContent = 'Downloading…';
+    else if (failed) badge.textContent = 'Failed — download only failed for you';
+    else if (predownloadingUrls.has(item.url)) badge.textContent = 'Pre-loading…';
     else if (idx === roomQueueIndex) badge.textContent = 'Now playing';
+    else if (predownloadedPaths.has(item.url)) badge.textContent = 'Ready';
 
     const actions = document.createElement('div');
     actions.className = 'queue-item-actions';
 
-    if (idx !== roomQueueIndex) {
+    if (failed) {
+      const retryBtn = document.createElement('button');
+      retryBtn.type = 'button';
+      retryBtn.title = 'Retry download';
+      retryBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 4V1L8 5l4 4V6a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8Z"/></svg>';
+      retryBtn.addEventListener('click', () => {
+        currentVideoUrl = null;
+        loadVideo(item.url, item.id);
+      });
+      actions.appendChild(retryBtn);
+    } else if (idx !== roomQueueIndex) {
       const playBtn = document.createElement('button');
       playBtn.type = 'button';
       playBtn.title = 'Play now';
@@ -327,7 +622,9 @@ function renderQueueList() {
 
 // Downloads whichever queue item is now "current" if it's not already the
 // loaded video, then resolves once that's settled — callers can chain a
-// seek/play-state application after it (see onSync below).
+// seek/play-state application after it (see onSync below). Also kicks off a
+// silent background download of whatever's next, so skipping/advancing is
+// instant instead of waiting on a fresh download.
 async function applyQueueState(queue, queueIndex) {
   roomQueue = Array.isArray(queue) ? queue : [];
   roomQueueIndex = typeof queueIndex === 'number' ? queueIndex : -1;
@@ -337,15 +634,45 @@ async function applyQueueState(queue, queueIndex) {
   if (current && current.url !== currentVideoUrl) {
     currentVideoUrl = current.url;
     $('#video-url').value = '';
-    await loadVideo(current.url);
+    await loadVideo(current.url, current.id);
   } else if (!current) {
     currentVideoUrl = null;
   }
+  predownloadNext();
 }
 
-async function loadVideo(url) {
+async function predownloadNext() {
+  const nextItem = roomQueue[roomQueueIndex + 1];
+  if (!nextItem) return;
+  if (predownloadedPaths.has(nextItem.url) || predownloadingUrls.has(nextItem.url) || nextItem.url === downloadingUrl) return;
+  predownloadingUrls.add(nextItem.url);
+  renderQueueList();
+  try {
+    const { filePath } = await window.onigiri.downloadVideo(nextItem.url);
+    predownloadedPaths.set(nextItem.url, filePath);
+  } catch {
+    // Silent — if it's still broken once it actually becomes current,
+    // the normal foreground download path surfaces the real error there.
+  } finally {
+    predownloadingUrls.delete(nextItem.url);
+    renderQueueList();
+  }
+}
+
+async function loadVideo(url, itemId) {
   if (!url) return;
+
+  const cached = predownloadedPaths.get(url);
+  if (cached) {
+    downloadError = null;
+    setLocalVideo(cached);
+    toast('Video ready');
+    renderQueueList();
+    return;
+  }
+
   downloadingUrl = url;
+  downloadError = null;
   renderQueueList();
   $('#add-queue-btn').disabled = true;
   $('#progress-row').hidden = false;
@@ -354,10 +681,19 @@ async function loadVideo(url) {
   toast('Downloading video…');
   try {
     const { filePath } = await window.onigiri.downloadVideo(url);
+    predownloadedPaths.set(url, filePath);
     setLocalVideo(filePath);
     toast('Video ready');
   } catch (err) {
+    // Leave currentVideoUrl unset so a retry — or a future queue-update
+    // that lands on this same item — will actually attempt the download
+    // again, instead of silently staying stuck on whatever was there
+    // before (or nothing at all).
+    currentVideoUrl = null;
+    downloadError = { itemId, url, message: err.message };
     toast(`Download failed: ${err.message}`);
+    $('#video-empty').querySelector('p').textContent = `Download failed — ${err.message}`;
+    $('#video-empty').style.display = 'flex';
   } finally {
     downloadingUrl = null;
     renderQueueList();
@@ -378,6 +714,7 @@ function setLocalVideo(filePath) {
   video.src = toFileUrl(filePath);
   video.load();
   setTimeout(() => { suppressPlayerEvents = false; }, 300);
+  $('#video-empty').querySelector('p').textContent = 'Add a video to start';
   $('#video-empty').style.display = 'none';
 }
 
@@ -403,7 +740,8 @@ function wireNetworkEvents() {
     applyQueueState(queue, queueIndex);
   });
 
-  window.onigiri.onSync(async ({ time, isPlaying, queue, queueIndex }) => {
+  window.onigiri.onSync(async ({ time, isPlaying, queue, queueIndex, djUsernames: list }) => {
+    if (list) { djUsernames = list; updateVideoControls(); renderParticipants(lastParticipants); }
     if (queue) await applyQueueState(queue, queueIndex);
     suppressPlayerEvents = true;
     if (typeof time === 'number') video.currentTime = time;
@@ -413,7 +751,12 @@ function wireNetworkEvents() {
 
   window.onigiri.onChat((msg) => { appendChat(msg); clearTyping(msg.username); });
   window.onigiri.onSystem((msg) => appendSystem(msg.text));
-  window.onigiri.onPeers(({ participants }) => renderParticipants(participants || []));
+  window.onigiri.onPeers(({ participants }) => { lastParticipants = participants || []; renderParticipants(lastParticipants); });
+  window.onigiri.onDj(({ djUsernames: list }) => {
+    djUsernames = list || [];
+    updateVideoControls();
+    renderParticipants(lastParticipants);
+  });
   window.onigiri.onNetError(({ message }) => toast(message));
 
   window.onigiri.onTyping(({ username: who }) => {
@@ -430,27 +773,52 @@ function nameColor(name) {
   return `hsl(${hash % 360}, 60%, 55%)`;
 }
 
+// Play/pause/seek only reach the room from people the host has allowed to
+// control it — enforced by simply not giving them a native video control
+// surface to trigger those events with in the first place.
+function updateVideoControls() {
+  $('#player').controls = hasControlPermission();
+}
+
 function renderParticipants(participants) {
-  const dock = $('#participants-dock');
+  const dock = $('#top-participants');
   dock.innerHTML = '';
-  dock.hidden = participants.length === 0;
   participants.forEach(({ username: name, avatarUrl }) => {
-    const pill = document.createElement('div');
-    pill.className = 'participant-pill';
+    const chip = document.createElement('div');
+    const isSelf = name === username;
+    const isDj = djUsernames.includes(name);
+    const hostCanToggle = role === 'host' && !isSelf;
+    chip.className = 'participant-chip' + (hostCanToggle ? ' is-host-controllable' : '');
+    chip.title = hostCanToggle ? `Click to ${isDj ? 'revoke' : 'grant'} DJ` : '';
+
     if (avatarUrl && looksLikeImageUrl(avatarUrl)) {
       const img = document.createElement('img');
       img.className = 'participant-avatar';
       img.src = avatarUrl;
       img.alt = '';
-      pill.appendChild(img);
+      chip.appendChild(img);
     } else {
       const dot = document.createElement('span');
       dot.className = 'participant-dot';
       dot.style.background = nameColor(name);
-      pill.appendChild(dot);
+      chip.appendChild(dot);
     }
-    pill.appendChild(document.createTextNode(name));
-    dock.appendChild(pill);
+
+    const label = document.createElement('span');
+    label.className = 'participant-chip-name';
+    label.textContent = name;
+    if (isDj) {
+      const badge = document.createElement('span');
+      badge.className = 'participant-chip-dj';
+      badge.textContent = 'DJ';
+      label.appendChild(badge);
+    }
+    chip.appendChild(label);
+
+    if (hostCanToggle) {
+      chip.addEventListener('click', () => window.onigiri.toggleDj(name));
+    }
+    dock.appendChild(chip);
   });
 }
 
@@ -704,6 +1072,11 @@ function closeSettings() {
 async function openSettings() {
   config = await window.onigiri.getConfig();
   customEmotes = await window.onigiri.getEmotes();
+  $('#setting-background-url').value = config.backgroundUrl;
+  $('#setting-blur-amount').value = config.backgroundBlur ?? 24;
+  $('#blur-amount-label').textContent = `${config.backgroundBlur ?? 24}px`;
+  $('#setting-parallax').checked = config.backgroundParallax !== false;
+  refreshAppearanceButtons();
   $('#setting-avatar-url').value = config.avatarUrl;
   $('#setting-dir').value = config.downloadDir;
   $('#setting-webhook').value = config.webhookUrl;
@@ -712,6 +1085,8 @@ async function openSettings() {
   const path = await window.onigiri.getEmotesPath();
   $('#emotes-file-path').textContent = path;
   renderCustomEmojiList();
+  $('#settings-nav').querySelectorAll('.settings-nav-item').forEach((b, i) => b.classList.toggle('is-active', i === 0));
+  $('.settings-panels').querySelectorAll('.settings-panel').forEach((p) => { p.hidden = p.dataset.panel !== 'appearance'; });
   $('#settings-dialog').hidden = false;
 }
 
@@ -769,12 +1144,16 @@ function wireSettings() {
     try {
       await window.onigiri.setConfig({
         avatarUrl: $('#setting-avatar-url').value.trim(),
+        backgroundUrl: $('#setting-background-url').value.trim(),
+        backgroundBlur: parseInt($('#setting-blur-amount').value, 10),
+        backgroundParallax: $('#setting-parallax').checked,
         downloadDir: $('#setting-dir').value.trim(),
         webhookUrl: $('#setting-webhook').value.trim(),
         supabaseUrl: $('#setting-supabase-url').value.trim(),
         supabaseKey: $('#setting-supabase-key').value.trim()
       });
       config = await window.onigiri.getConfig();
+      applyAppearance();
       refreshConfigNotice();
       closeSettings();
       toast('Settings saved');

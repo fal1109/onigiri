@@ -53,38 +53,43 @@
   --font-body: 'Roboto', system-ui, sans-serif;
 }
 
-@media (prefers-color-scheme: light){
-  :root{
-    color-scheme: light;
-    --md-primary: #B3401F;
-    --md-on-primary: #FFFFFF;
-    --md-primary-container: #FFDBCF;
-    --md-on-primary-container: #3A0900;
+/* Theme is chosen explicitly (Settings → Theme), not read from the OS —
+   data-theme="dark" is the default and needs no rule of its own since the
+   :root block above already holds those values. */
+:root[data-theme="light"]{
+  color-scheme: light;
+  --md-primary: #B3401F;
+  --md-on-primary: #FFFFFF;
+  --md-primary-container: #FFDBCF;
+  --md-on-primary-container: #3A0900;
 
-    --md-secondary: #77574C;
-    --md-on-secondary: #FFFFFF;
+  --md-secondary: #77574C;
+  --md-on-secondary: #FFFFFF;
 
-    --md-tertiary: #666000;
-    --md-on-tertiary: #FFFFFF;
+  --md-tertiary: #666000;
+  --md-on-tertiary: #FFFFFF;
 
-    --nori: #221C18;
-    --md-surface: #FFF8F5;
-    --md-surface-dim: #E8D6CF;
-    --md-surface-bright: #FFF8F5;
-    --md-surface-container-lowest: #FFFFFF;
-    --md-surface-container-low: #FFF1EB;
-    --md-surface-container: #FCEAE2;
-    --md-surface-container-high: #F6E4DD;
-    --md-surface-container-highest: #F1DED7;
-    --md-on-surface: #221A15;
-    --md-on-surface-variant: #53433C;
-    --md-outline: #85736A;
-    --md-outline-variant: #D8C2B8;
+  --nori: #221C18;
+  --md-surface: #FFF8F5;
+  --md-surface-dim: #E8D6CF;
+  --md-surface-bright: #FFF8F5;
+  --md-surface-container-lowest: #FFFFFF;
+  --md-surface-container-low: #FFF1EB;
+  --md-surface-container: #FCEAE2;
+  --md-surface-container-high: #F6E4DD;
+  --md-surface-container-highest: #F1DED7;
+  --md-on-surface: #221A15;
+  --md-on-surface-variant: #53433C;
+  --md-outline: #85736A;
+  --md-outline-variant: #D8C2B8;
 
-    --md-error: #BA1A1A;
-    --md-on-error: #FFFFFF;
-  }
+  --md-error: #BA1A1A;
+  --md-on-error: #FFFFFF;
 }
+
+/* A custom theme (Settings → Import theme JSON) overrides these same
+   primary-role tokens via inline styles on :root at runtime, which beats
+   anything here regardless of specificity — no CSS rule needed for it. */
 
 *{ box-sizing: border-box; }
 
@@ -191,11 +196,43 @@ button.chip:hover{ filter:brightness(1.1); }
 /* ---------------------------------- Setup view -------------------------*/
 #view-root{ flex:1; min-height:0; }
 .setup{
-  height:100%; overflow-y:auto;
+  height:100%; overflow-y:auto; position:relative;
   display:flex; flex-direction:column; align-items:center;
   padding: 64px 24px;
 }
-.setup-hero{ max-width:560px; text-align:center; margin-bottom:40px; }
+
+/* Everything decorative (background image + cookie) lives inside this
+   overflow:hidden layer. Both bleed past the edge on purpose for the
+   visual effect — without a clipping layer of their own, that overflow
+   was expanding .setup's own scrollable area and adding phantom
+   scrollbars, which is why this wrapper exists at all. */
+.setup-decor{
+  position:absolute; inset:0; z-index:0;
+  overflow:hidden; pointer-events:none;
+}
+
+/* Custom background: a separate, oversized, blurred layer behind the
+   content rather than blurring .setup itself, so the cards/text stay sharp.
+   Blur amount and parallax offset are both applied inline by JS. */
+.setup-bg{
+  position:absolute; inset:-30px;
+  background-size:cover; background-position:center;
+  transition: filter .2s ease;
+}
+.setup-bg::after{
+  content:''; position:absolute; inset:0;
+  background: color-mix(in srgb, var(--md-surface) 55%, transparent);
+}
+
+/* Rotating cookie mascot, shown only when there's no custom background. */
+.setup-cookie{
+  position:absolute; right:-130px; bottom:-130px;
+  width:460px; height:460px;
+  animation: cookie-spin 15s linear infinite;
+}
+@keyframes cookie-spin{ from{ transform:rotate(0deg); } to{ transform:rotate(360deg); } }
+
+.setup-hero{ max-width:560px; text-align:center; margin-bottom:40px; position:relative; z-index:1; }
 .setup-hero h1{
   font-family: var(--font-display);
   font-size: 34px; line-height:1.2; font-weight:600; margin:0 0 12px;
@@ -207,12 +244,13 @@ button.chip:hover{ filter:brightness(1.1); }
   padding:12px 18px; border-radius: var(--shape-md);
   background: var(--md-tertiary); color: var(--md-on-tertiary);
   font-size:13px; line-height:1.5;
+  position:relative; z-index:1;
 }
 .link-btn{
   background:none; border:none; padding:0; margin:0; cursor:pointer;
   color:inherit; font:inherit; font-weight:700; text-decoration:underline;
 }
-.setup-cards{ display:flex; gap:20px; flex-wrap:wrap; justify-content:center; max-width:760px; }
+.setup-cards{ display:flex; gap:20px; flex-wrap:wrap; justify-content:center; max-width:760px; position:relative; z-index:1; }
 .card{
   background: var(--md-surface-container);
   border-radius: var(--shape-lg);
@@ -254,6 +292,15 @@ button.chip:hover{ filter:brightness(1.1); }
 .field-row input{ flex:1; }
 .field-row .emote-name-input{ flex:0 0 120px; }
 .field-hint{ display:block; font-size:11px; color: var(--md-on-surface-variant); margin-top:6px; line-height:1.6; }
+
+.segmented{ display:inline-flex; border-radius: var(--shape-full); background: var(--md-surface-container-low); padding:3px; }
+.segmented button{
+  border:none; background:transparent; cursor:pointer;
+  padding:6px 18px; border-radius: var(--shape-full);
+  font-size:13px; font-weight:500; color: var(--md-on-surface-variant);
+}
+.segmented button.is-active{ background: var(--md-primary); color: var(--md-on-primary); }
+
 .field-hint code{
   background: var(--md-surface-container-highest); border-radius:4px;
   padding:1px 5px; font-size:10.5px;
@@ -325,6 +372,8 @@ button.chip:hover{ filter:brightness(1.1); }
   padding:8px 10px; border-radius: var(--shape-sm);
 }
 .queue-item.is-current{ background: var(--md-primary-container); }
+.queue-item.is-failed{ background: color-mix(in srgb, var(--md-error) 18%, transparent); }
+.queue-item.is-failed .queue-item-badge{ color: var(--md-error); }
 .queue-item-index{ font-size:11px; color: var(--md-on-surface-variant); width:18px; flex-shrink:0; }
 .queue-item.is-current .queue-item-index{ color: var(--md-on-primary-container); }
 .queue-item-url{
@@ -370,24 +419,37 @@ button.chip:hover{ filter:brightness(1.1); }
   display:flex; flex-direction:column; gap:6px;
 }
 
-.participants-dock{
-  position:absolute; right:16px; bottom:56px; z-index:6;
-  display:flex; flex-direction:column; align-items:flex-end; gap:4px;
-  max-width:40%;
+/* ---- Participants, top bar: avatars/dots that expand to show a name on
+   hover rather than a persistent text list. ---- */
+.top-participants{ display:flex; align-items:center; gap:4px; }
+.participant-chip{
+  display:flex; align-items:center;
+  height:28px; border-radius: var(--shape-full);
+  background: transparent;
+  overflow:hidden; cursor:default;
+  transition: background-color .15s ease;
 }
-.participant-pill{
-  display:flex; align-items:center; gap:6px;
-  background: color-mix(in srgb, var(--nori) 55%, transparent);
-  color:#fff; font-size:12px;
-  padding:3px 10px 3px 4px; border-radius: var(--shape-full);
+.participant-chip.is-host-controllable{ cursor:pointer; }
+.participant-chip:hover{ background: var(--md-surface-container-high); }
+.participant-dot, .participant-avatar{
+  width:26px; height:26px; border-radius:50%; flex-shrink:0;
+  transition: transform .15s ease;
 }
-.participant-dot{
-  width:16px; height:16px; border-radius:50%; flex-shrink:0;
-  background: var(--md-primary);
+.participant-dot{ background: var(--md-primary); }
+.participant-avatar{ object-fit:cover; }
+.participant-chip:hover .participant-dot,
+.participant-chip:hover .participant-avatar{ transform:scale(1.08); }
+.participant-chip-name{
+  max-width:0; opacity:0; white-space:nowrap; overflow:hidden;
+  font-size:12px; color: var(--md-on-surface);
+  transition: max-width .2s ease, opacity .15s ease, padding-left .2s ease;
 }
-.participant-avatar{
-  width:16px; height:16px; border-radius:50%; flex-shrink:0;
-  object-fit:cover;
+.participant-chip:hover .participant-chip-name{
+  max-width:140px; opacity:1; padding-left:8px; padding-right:10px;
+}
+.participant-chip-dj{
+  font-size:9px; font-weight:700; letter-spacing:.4px;
+  color: var(--md-primary); margin-left:4px;
 }
 
 .chat-dock-log{
@@ -477,8 +539,41 @@ button.chip:hover{ filter:brightness(1.1); }
   padding:24px; box-shadow: var(--elev-3);
 }
 .dialog h2{ font-family: var(--font-display); margin:0 0 18px; font-size:18px; font-weight:600; }
-.dialog-divider{ border:none; border-top:1px solid var(--md-outline-variant); margin:18px 0; }
-.dialog-actions{ display:flex; justify-content:flex-end; gap:8px; margin-top:6px; }
+.dialog-actions{ display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
+
+/* Settings, specifically: wider, two-column (section nav + the active
+   panel's fields) instead of one long stacked list. */
+.dialog-settings{ width:640px; }
+.settings-body{ display:flex; gap:24px; min-height:340px; }
+.settings-nav{
+  width:150px; flex-shrink:0;
+  display:flex; flex-direction:column; gap:2px;
+  border-right:1px solid var(--md-outline-variant);
+  padding-right:16px;
+}
+.settings-nav-item{
+  text-align:left; border:none; background:transparent; cursor:pointer;
+  padding:9px 10px; border-radius: var(--shape-sm);
+  font-size:13.5px; color: var(--md-on-surface-variant);
+}
+.settings-nav-item:hover{ background: var(--md-surface-container-highest); }
+.settings-nav-item.is-active{ background: var(--md-primary-container); color: var(--md-on-primary-container); font-weight:500; }
+.settings-panels{ flex:1; min-width:0; max-height:420px; overflow-y:auto; padding-right:4px; }
+.settings-panel .field:last-child{ margin-bottom:0; }
+
+.field-checkbox{ display:flex; align-items:center; gap:10px; flex-direction:row; }
+.field-checkbox input{ width:16px; height:16px; accent-color: var(--md-primary); }
+.field-checkbox span{ font-size:13px; color: var(--md-on-surface); }
+input[type="range"]{ width:100%; accent-color: var(--md-primary); }
+
+.scheme-swatches{ display:flex; flex-wrap:wrap; gap:10px; margin-bottom:10px; }
+.scheme-swatch{
+  width:30px; height:30px; border-radius:50%; cursor:pointer;
+  border:2px solid transparent; padding:0;
+  transition: border-color .15s ease, transform .15s ease;
+}
+.scheme-swatch:hover{ transform:scale(1.08); }
+.scheme-swatch.is-active{ border-color: var(--md-on-surface); }
 
 /* ---------------------------------- Snackbar -----------------------------*/
 .snackbar{

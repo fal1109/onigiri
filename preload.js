@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('onigiri', {
   getConfig: () => ipcRenderer.invoke('config:get'),
   setConfig: (partial) => ipcRenderer.invoke('config:set', partial),
   chooseDownloadDir: () => ipcRenderer.invoke('dialog:choose-dir'),
+  importTheme: () => ipcRenderer.invoke('theme:import'),
 
   // emotes (own file, separate from config — see README)
   getEmotes: () => ipcRenderer.invoke('emotes:get'),
@@ -35,6 +36,7 @@ contextBridge.exposeInMainWorld('onigiri', {
   sendChat: (username, text) => ipcRenderer.invoke('chat:send', { username, text }),
   sendTyping: (username) => ipcRenderer.invoke('chat:typing', { username }),
   sendTypingStop: (username) => ipcRenderer.invoke('chat:typing-stop', { username }),
+  toggleDj: (username) => ipcRenderer.invoke('dj:toggle', { username }),
 
   // events in
   onVideoProgress: (cb) => ipcRenderer.on('video:progress', (_e, data) => cb(data)),
@@ -43,6 +45,7 @@ contextBridge.exposeInMainWorld('onigiri', {
   onQueue: (cb) => ipcRenderer.on('net:queue', (_e, data) => cb(data)),
   onChat: (cb) => ipcRenderer.on('net:chat', (_e, data) => cb(data)),
   onTyping: (cb) => ipcRenderer.on('net:typing', (_e, data) => cb(data)),
+  onDj: (cb) => ipcRenderer.on('net:dj', (_e, data) => cb(data)),
   onTypingStop: (cb) => ipcRenderer.on('net:typing-stop', (_e, data) => cb(data)),
   onSystem: (cb) => ipcRenderer.on('net:system', (_e, data) => cb(data)),
   onPeers: (cb) => ipcRenderer.on('net:peers', (_e, data) => cb(data)),
