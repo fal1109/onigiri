@@ -15,7 +15,7 @@ watch together app that downloads the videos so no one suffers from internet lag
    - Windows: https://www.gyan.dev/ffmpeg/builds/ (add the `bin` folder to `PATH`)
 
 
-
+### the app is still in development, expect bugs
 
 ## THIS IS AI SLOP. I MADE THIS FOR A GROUP OF FRIENDS AND YOU CAN DO WHATEVER YOU WANT WITH IT.
 
@@ -57,7 +57,6 @@ you'll immediately start downloading whatever's currently playing and land
 at the right timestamp. Anyone in the room can add to the queue, not just
 the host, and anyone can jump to a different queued item or remove one.
 
-<<<<<<< HEAD
 ### Queue
 
 Click **Queue** (next to Add to queue) to see what's up next. Each item
@@ -122,7 +121,7 @@ pick up your edits without restarting the app. It's a plain JSON array:
 ]
 ```
 
-<<<<<<< HEAD
+
 Custom emotes show up correctly for *everyone* in the room when you send
 one — not just people who've added the same emote locally — since the app
 just recognizes "this whole message is an image link" and renders it
@@ -159,7 +158,7 @@ left-hand list of sections rather than one long page):
   background image is actually set.
 
 ### Discord logging
-=======
+
 ### Discord logging [optional]
 
 
