@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('onigiri', {
   getConfig: () => ipcRenderer.invoke('config:get'),
   setConfig: (partial) => ipcRenderer.invoke('config:set', partial),
   chooseDownloadDir: () => ipcRenderer.invoke('dialog:choose-dir'),
+  healthCheck: () => ipcRenderer.invoke('health:check'),
   importTheme: () => ipcRenderer.invoke('theme:import'),
 
   // emotes (own file, separate from config — see README)
@@ -24,6 +25,7 @@ contextBridge.exposeInMainWorld('onigiri', {
   // video
   downloadVideo: (url) => ipcRenderer.invoke('video:download', { url }),
   openInFolder: (p) => ipcRenderer.invoke('shell:open-path', p),
+  openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
 
   // queue
   queueAdd: (url) => ipcRenderer.invoke('queue:add', { url }),

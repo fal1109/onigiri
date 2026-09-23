@@ -57,7 +57,8 @@ let suppressPlayerEvents = false;
 let currentVideoUrl = null;
 let currentItemId = null; // id of the queue item ACTUALLY loaded in the player right now
 let lastKnownSyncedTime = 0; // last room-authoritative time, used to snap back unauthorized seeks
-let downloadingUrl = null;
+const downloadingUrls = new Set(); // multiple downloads can overlap now that queueing stays live
+let foregroundUrl = null; // download currently driving the progress bar / player
 let downloadError = null; // { itemId, url, message } — local to this client only
 const predownloadedPaths = new Map(); // url -> local file path, ready to use instantly
 const predownloadingUrls = new Set();
@@ -92,7 +93,15 @@ const hasControlPermission = () => amIHost || djUsernames.includes(username);
   wireSettings();
   wireAppearance();
   wireNetworkEvents();
+  wireHealthCheck();
+  wireAboutLinks();
   refreshConfigNotice();
+
+  // Probe the download stack quietly; only surface the checklist when
+  // something actually needs fixing (never assume what the user downloads).
+  window.onigiri.healthCheck().then((result) => {
+    if (!result.allOk) runHealthCheck();
+  }).catch(() => {});
 })();
 
 // ---- Theme generation: every theme is just a seed hex color. Surfaces,
@@ -252,7 +261,8 @@ function applyAppearance() {
   // cookie is an <svg> element — SVGElement doesn't reliably support the
   // .hidden IDL property the way HTMLElement does, so setting it directly
   // can silently no-op. setAttribute/removeAttribute always works.
-  if (config.backgroundUrl) {
+  // backgroundEnabled (Material switch) toggles the image without wiping the URL.
+  if (config.backgroundUrl && config.backgroundEnabled !== false) {
     bg.style.backgroundImage = `url("${config.backgroundUrl}")`;
     bg.style.filter = `blur(${config.backgroundBlur ?? 24}px)`;
     bg.hidden = false;
@@ -271,7 +281,7 @@ function setBackgroundTransform(x, y) {
 }
 
 function handleParallaxMouseMove(e) {
-  if (!config.backgroundParallax || !config.backgroundUrl || $('#setup-view').hidden) return;
+  if (!config.backgroundParallax || !config.backgroundUrl || config.backgroundEnabled === false || $('#setup-view').hidden) return;
   const x = (e.clientX / window.innerWidth - 0.5) * 30;
   const y = (e.clientY / window.innerHeight - 0.5) * 30;
   setBackgroundTransform(x, y);
@@ -436,7 +446,8 @@ async function leaveRoom() {
   currentVideoUrl = null;
   currentItemId = null;
   lastKnownSyncedTime = 0;
-  downloadingUrl = null;
+  downloadingUrls.clear();
+  foregroundUrl = null;
   downloadError = null;
   roomQueue = [];
   roomQueueIndex = -1;
@@ -577,7 +588,10 @@ function wireRoom() {
     refreshBarVisibility();
   });
 
-  window.onigiri.onVideoProgress(({ percent }) => {
+  window.onigiri.onVideoProgress(({ percent, url }) => {
+    // Only show progress for the download the user is actually waiting on —
+    // with queue-while-downloading, background prefetches run concurrently.
+    if (url && foregroundUrl && url !== foregroundUrl) return;
     $('#progress-row').hidden = false;
     $('#progress-fill').style.width = `${percent}%`;
     $('#progress-label').textContent = `${Math.round(percent)}%`;
@@ -619,7 +633,7 @@ function renderQueueList() {
 
     const badge = document.createElement('span');
     badge.className = 'queue-item-badge';
-    if (item.url === downloadingUrl) badge.textContent = 'Downloading…';
+    if (downloadingUrls.has(item.url)) badge.textContent = 'Downloading…';
     else if (failed) badge.textContent = 'Failed — download only failed for you';
     else if (predownloadingUrls.has(item.url)) badge.textContent = 'Pre-loading…';
     else if (idx === roomQueueIndex) badge.textContent = 'Now playing';
@@ -686,7 +700,7 @@ async function applyQueueState(queue, queueIndex) {
 async function predownloadNext() {
   const nextItem = roomQueue[roomQueueIndex + 1];
   if (!nextItem) return;
-  if (predownloadedPaths.has(nextItem.url) || predownloadingUrls.has(nextItem.url) || nextItem.url === downloadingUrl) return;
+  if (predownloadedPaths.has(nextItem.url) || predownloadingUrls.has(nextItem.url) || downloadingUrls.has(nextItem.url)) return;
   predownloadingUrls.add(nextItem.url);
   renderQueueList();
   try {
@@ -714,21 +728,36 @@ async function loadVideo(url, itemId) {
     return;
   }
 
-  downloadingUrl = url;
+  downloadingUrls.add(url);
+  foregroundUrl = url;
   downloadError = null;
   renderQueueList();
-  $('#add-queue-btn').disabled = true;
+  // Queueing must stay available while something downloads — being unable to
+  // add the NEXT video until this one finished made the queue unusable.
   $('#progress-row').hidden = false;
   $('#progress-fill').style.width = '0%';
   $('#progress-label').textContent = '0%';
   toast('Downloading video…');
   try {
     const { filePath } = await window.onigiri.downloadVideo(url);
+    if (url !== foregroundUrl) {
+      // The user moved on to a different video while this downloaded — don't
+      // stomp the player (or its progress bar) with a stale completion.
+      predownloadedPaths.set(url, filePath);
+      return;
+    }
     predownloadedPaths.set(url, filePath);
     setLocalVideo(filePath);
     currentItemId = itemId;
     toast('Video ready');
   } catch (err) {
+    if (url !== foregroundUrl) {
+      // Stale failure for a video the user already moved on from — the queue
+      // badge shows the error; no toasts or empty-state overwrites needed.
+      downloadError = { itemId, url, message: err.message };
+      renderQueueList();
+      return;
+    }
     // Leave currentVideoUrl unset so a retry — or a future queue-update
     // that lands on this same item — will actually attempt the download
     // again, instead of silently staying stuck on whatever was there
@@ -740,10 +769,12 @@ async function loadVideo(url, itemId) {
     $('#video-empty').querySelector('p').textContent = `Download failed — ${err.message}`;
     $('#video-empty').style.display = 'flex';
   } finally {
-    downloadingUrl = null;
+    downloadingUrls.delete(url);
     renderQueueList();
-    $('#add-queue-btn').disabled = false;
-    setTimeout(() => { $('#progress-row').hidden = true; }, 1200);
+    if (url === foregroundUrl) {
+      foregroundUrl = null;
+      setTimeout(() => { $('#progress-row').hidden = true; }, 1200);
+    }
   }
 }
 
@@ -1291,9 +1322,17 @@ async function openSettings() {
   refreshAppearanceButtons();
   $('#setting-avatar-url').value = config.avatarUrl;
   $('#setting-dir').value = config.downloadDir;
+  $('#setting-cookie-browser').value = config.cookiesFromBrowser || '';
+  refreshQualityButtons();
+  $('#setting-bg-enabled').checked = config.backgroundEnabled !== false;
+  $('#bg-switch-label').textContent = config.backgroundEnabled !== false ? 'Show background image' : 'Background image hidden';
   $('#setting-webhook').value = config.webhookUrl;
   $('#setting-supabase-url').value = config.supabaseUrl;
   $('#setting-supabase-key').value = config.supabaseKey;
+  const rpc = config.discordRpc || {};
+  $('#setting-rpc-enabled').checked = !!rpc.enabled;
+  $('#setting-rpc-participants').checked = rpc.showParticipants !== false;
+  $('#setting-rpc-github').checked = rpc.showGithubButton !== false;
   const path = await window.onigiri.getEmotesPath();
   $('#emotes-file-path').textContent = path;
   renderCustomEmojiList();
@@ -1350,6 +1389,51 @@ function wireSettings() {
     toast('Reloaded emotes from file');
   });
 
+  // background-image on/off switch (keeps the URL)
+  $('#setting-bg-enabled').checked = config.backgroundEnabled !== false;
+  $('#setting-bg-enabled').addEventListener('change', async (e) => {
+    try {
+      await window.onigiri.setConfig({ backgroundEnabled: e.target.checked });
+      config = await window.onigiri.getConfig();
+      applyAppearance();
+      const label = $('#bg-switch-label');
+      label.textContent = e.target.checked ? 'Show background image' : 'Background image hidden';
+      toast(e.target.checked ? 'Background shown' : 'Background hidden — URL kept');
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  // Discord RPC toggles — save instantly so they apply without pressing Save
+  const rpcKeys = [
+    ['setting-rpc-enabled', 'enabled'],
+    ['setting-rpc-participants', 'showParticipants'],
+    ['setting-rpc-github', 'showGithubButton'],
+  ];
+  for (const [id, key] of rpcKeys) {
+    $(`#${id}`).addEventListener('change', async (e) => {
+      try {
+        const rpc = { ...(config.discordRpc || {}), [key]: e.target.checked };
+        await window.onigiri.setConfig({ discordRpc: rpc });
+        config = await window.onigiri.getConfig();
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+  }
+
+  $('#quality-toggle').addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-quality-value]');
+    if (!btn) return;
+    try {
+      await window.onigiri.setConfig({ downloadQuality: btn.dataset.qualityValue });
+      config = await window.onigiri.getConfig();
+      refreshQualityButtons();
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
   $('#settings-save').addEventListener('click', async () => {
     const btn = $('#settings-save');
     btn.disabled = true;
@@ -1360,6 +1444,9 @@ function wireSettings() {
         backgroundBlur: parseInt($('#setting-blur-amount').value, 10),
         backgroundParallax: $('#setting-parallax').checked,
         downloadDir: $('#setting-dir').value.trim(),
+        cookiesFromBrowser: $('#setting-cookie-browser').value.trim(),
+        downloadQuality: config.downloadQuality || 'best',
+        discordRpc: config.discordRpc || { enabled: false, showParticipants: true, showGithubButton: true },
         webhookUrl: $('#setting-webhook').value.trim(),
         supabaseUrl: $('#setting-supabase-url').value.trim(),
         supabaseKey: $('#setting-supabase-key').value.trim()
@@ -1377,4 +1464,83 @@ function wireSettings() {
   });
 
   $('#setup-notice-settings-link').addEventListener('click', openSettings);
+}
+
+function refreshQualityButtons() {
+  const current = config.downloadQuality || 'best';
+  document.querySelectorAll('#quality-toggle [data-quality-value]').forEach((b) => {
+    b.classList.toggle('is-active', b.dataset.qualityValue === current);
+  });
+}
+
+// Links inside the settings dialog must open in the user's default browser —
+// target=_blank alone would spawn a new Electron window.
+function wireAboutLinks() {
+  for (const a of document.querySelectorAll('.about-site, .about-github')) {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      window.onigiri.openExternal(a.href);
+    });
+  }
+  // Easter-egg anchor — wired and currently a no-op, fill it in later.
+  $('#about-tagline').addEventListener('click', () => { /* reserved */ });
+}
+
+// ---------------------------------------------------------------------------
+// First-run setup check — live probes of everything video downloads need.
+// The heavy lifting lives in main.js (health:check); this renders it.
+// ---------------------------------------------------------------------------
+function wireHealthCheck() {
+  $('#health-rerun').addEventListener('click', runHealthCheck);
+  $('#health-done').addEventListener('click', () => { $('#health-dialog').hidden = true; });
+  $('#health-dialog').addEventListener('click', (e) => {
+    if (e.target.id === 'health-dialog') $('#health-dialog').hidden = true;
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !$('#health-dialog').hidden) $('#health-dialog').hidden = true;
+  });
+  $('#run-setup-check-btn').addEventListener('click', runHealthCheck);
+}
+
+async function runHealthCheck() {
+  const list = $('#health-list');
+  const dialog = $('#health-dialog');
+  dialog.hidden = false;
+  list.innerHTML = '';
+
+  const rows = ['ytdlp', 'ffmpeg', 'impersonate', 'plugins', 'cookies'].map((id) => {
+    const row = document.createElement('div');
+    row.className = 'health-item is-running';
+    row.dataset.id = id;
+    row.innerHTML = '<span class="health-dot"></span><div><div class="health-label">' + id + '</div><div class="health-detail">checking…</div></div>';
+    list.appendChild(row);
+    return row;
+  });
+
+  let result;
+  try {
+    result = await window.onigiri.healthCheck();
+  } catch (err) {
+    rows.forEach((row) => {
+      row.className = 'health-item is-fail';
+      row.querySelector('.health-detail').textContent = `check failed: ${err.message}`;
+    });
+    return;
+  }
+
+  for (const item of result.items) {
+    const row = rows.find((r) => r.dataset.id === item.id);
+    if (!row) continue;
+    row.className = `health-item ${item.ok ? 'is-ok' : 'is-fail'}`;
+    row.querySelector('.health-label').textContent = item.label;
+    row.querySelector('.health-detail').textContent = item.detail;
+    if (!item.ok && item.fix) {
+      const fix = document.createElement('div');
+      fix.className = 'health-fix';
+      fix.textContent = `→ ${item.fix}`;
+      row.querySelector('div').appendChild(fix);
+    }
+  }
+
+  if (result.allOk) toast('All good — downloads are ready');
 }

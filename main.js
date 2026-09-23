@@ -3,7 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const { createClient } = require('@supabase/supabase-js');
 
 // supabase-js's Realtime client needs a WebSocket implementation when run
@@ -29,9 +29,12 @@ function defaultConfig() {
     themeMode: 'dark',
     colorScheme: 'salmon',
     backgroundUrl: '',
+    backgroundEnabled: true,
     backgroundBlur: 24,
     backgroundParallax: true,
-    customTheme: null
+    customTheme: null,
+    downloadQuality: 'best',
+    discordRpc: { enabled: false, showParticipants: true, showGithubButton: true }
   };
 }
 
@@ -112,6 +115,7 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   stopEverything();
+  clearDiscordRpc();
   if (process.platform !== 'darwin') app.quit();
 });
 
@@ -120,6 +124,68 @@ function send(channelName, payload) {
     mainWindow.webContents.send(channelName, payload);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Discord Rich Presence — optional, off by default. Shows "Watching Onigiri"
+// with the room code, participant count, and (optionally) a GitHub button.
+// ---------------------------------------------------------------------------
+let rpcClient = null;
+let rpcStartedAt = null;
+let rpcParticipants = 0;
+let activeRoomCode = null;
+
+// Create a Discord Application at discord.com/developers, enable Rich Presence
+// and put its Application ID here. Upload build/icon.png as the "onigiri"
+// asset on that app's Rich Presence page so the art shows up.
+const RPC_CLIENT_ID = '1552320003640918189';
+
+const RPC_GITHUB_URL = 'https://github.com/fal1109/onigiri';
+
+async function updateDiscordRpc() {
+  const rpc = config.discordRpc || {};
+  if (!rpc.enabled) return;
+  if (!rpcClient) {
+    try {
+      const { Client } = require('discord-rpc');
+      rpcClient = new Client({ transport: 'ipc' });
+      rpcClient.on('error', () => { /* Discord not running — stay quiet */ });
+      await rpcClient.login({ clientId: RPC_CLIENT_ID }).catch(() => { rpcClient = null; });
+    } catch {
+      rpcClient = null;
+      return;
+    }
+  }
+  if (!rpcClient) return;
+  if (!rpcStartedAt) rpcStartedAt = Date.now();
+  const inRoom = Boolean(activeRoomCode);
+  const buttons = rpc.showGithubButton ? [{ label: 'GitHub', url: RPC_GITHUB_URL }] : undefined;
+  try {
+    await rpcClient.setActivity({
+      // Deliberately no room code here — Discord presence is visible to
+      // anyone who can see the user's status, and rooms join by code.
+      details: inRoom ? 'Watching together' : 'Idle in the lobby',
+      state: inRoom && rpc.showParticipants ? `${rpcParticipants} participant${rpcParticipants === 1 ? '' : 's'}` : undefined,
+      startTimestamp: rpcStartedAt,
+      largeImageKey: 'onigiri',
+      largeImageText: 'Onigiri — watch together',
+      smallImageKey: 'onigiri',
+      instance: false,
+      buttons,
+    });
+  } catch { /* presence is best-effort */ }
+}
+
+function clearDiscordRpc() {
+  rpcStartedAt = null;
+  rpcParticipants = 0;
+  if (rpcClient) {
+    rpcClient.clearActivity().catch(() => {});
+  }
+}
+
+app.on('before-quit', () => {
+  if (rpcClient) { try { rpcClient.destroy(); } catch { /* ignore */ } rpcClient = null; }
+});
 
 // ---------------------------------------------------------------------------
 // Networking — a room is a Supabase Realtime channel named after a short
@@ -167,6 +233,8 @@ function pushPeers(ch) {
   const participants = Object.values(state).flat().map((p) => ({ username: p.username, avatarUrl: p.avatarUrl || null }));
   const activeHost = computeActiveHost(state);
   amIHost = activeHost === currentUsername;
+  rpcParticipants = participants.length;
+  updateDiscordRpc();
   send('net:peers', { participants, activeHost, amIHost });
 }
 
@@ -436,22 +504,230 @@ async function postToDiscord(username, text) {
 // ---------------------------------------------------------------------------
 // Video download via yt-dlp
 // ---------------------------------------------------------------------------
+const CHROMIUM_UA_BROWSERS = new Set(['brave', 'chrome', 'chromium', 'edge', 'opera', 'vivaldi', 'whale']);
+
+// Quality selector → yt-dlp format selectors. Height caps fall back to the
+// best available stream when the cap isn't offered (e.g. site maxes at 480p).
+const DOWNLOAD_QUALITY_FORMATS = {
+  best: 'bv*+ba/b',
+  1080: 'bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b',
+  720: 'bv*[height<=720]+ba/b[height<=720]/bv*+ba/b',
+  480: 'bv*[height<=480]+ba/b[height<=480]/bv*+ba/b',
+  360: 'bv*[height<=360]+ba/b[height<=360]/bv*+ba/b',
+};
+// Firefox forks (Floorp, Zen, LibreWolf, …) aren't known to yt-dlp by name,
+// but their cookies are plain Firefox cookies: users point cookiesFromBrowser
+// at the profile dir instead, e.g. "firefox:~/.floorp/xxxx.default".
+const FIREFOX_FAMILY_BROWSERS = new Set(['firefox', 'floorp', 'zen', 'librewolf', 'waterfox']);
+
+// Build the exact user-agent a browser presents. Cloudflare pins cf_clearance
+// cookies to the UA that earned them, so this must match version AND platform.
+function browserUserAgent(kind, major) {
+  const platform = process.platform === 'win32' ? 'Windows NT 10.0; Win64; x64'
+    : process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10_15_7'
+    : 'X11; Linux x86_64';
+  if (kind === 'firefox') {
+    const mac = process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10.15' : platform;
+    return `Mozilla/5.0 (${mac}; rv:${major}.0) Gecko/20100101 Firefox/${major}.0`;
+  }
+  return `Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+}
+
+// Best-effort: find the browser's major version by running its --version.
+const BROWSER_BIN_ALIASES = {
+  zen: ['zen', 'zen-browser'],
+  librewolf: ['librewolf', 'librewolf-bin'],
+};
+
+function browserMajorVersion(browserName) {
+  for (const bin of BROWSER_BIN_ALIASES[browserName] || [browserName]) {
+    try {
+      const version = execFileSync(bin, ['--version'], { timeout: 5000 }).toString().trim();
+      const match = version.match(/(\d+)(?:\.\d+)*/);
+      if (match) return match[1];
+    } catch { /* not on PATH — try the next candidate */ }
+  }
+  return null;
+}
+
+// Bundled-first binary resolution: a packaged app ships yt-dlp/ffmpeg/plugins
+// inside its resources dir; a dev checkout falls back to whatever is on PATH.
+// This is what lets the setup.exe/AppImage be self-contained.
+function resourcesDir() {
+  return app.isPackaged ? process.resourcesPath : __dirname;
+}
+
+function bundledBin(bundledName, pathName) {
+  const dir = path.join(resourcesDir(), 'bin', process.platform);
+  for (const name of [bundledName, pathName]) {
+    const p = path.join(dir, name);
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+function resolveYtDlp() {
+  return bundledBin(process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp', 'yt-dlp') || 'yt-dlp';
+}
+
+function resolveFfmpeg() {
+  return bundledBin(process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg', 'ffmpeg') || 'ffmpeg';
+}
+
+function bundledPluginDirs() {
+  const dir = path.join(resourcesDir(), 'plugins');
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => path.join(dir, e.name));
+}
+
+// --- health probes (shared by the first-run checklist and `health:check`) ---
+function probeBinary(name, cmd, versionArg, minFeatures) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(cmd, [versionArg], { stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch {
+      return resolve({ ok: false, detail: 'not found' });
+    }
+    let out = '';
+    const timer = setTimeout(() => { child.kill(); resolve({ ok: false, detail: 'timed out' }); }, 10000);
+    child.stdout.on('data', (c) => { out += c; });
+    child.stderr.on('data', (c) => { out += c; });
+    child.on('error', () => { clearTimeout(timer); resolve({ ok: false, detail: 'not found' }); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      const first = out.split('\n')[0].trim();
+      resolve({ ok: code === 0, version: first, detail: code === 0 ? first : 'not found' });
+    });
+  });
+}
+
+function probeImpersonation(cmd) {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, ['--list-impersonate-targets'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    const timer = setTimeout(() => { child.kill(); resolve({ ok: false, detail: 'timed out — yt-dlp too old' }); }, 10000);
+    child.stdout.on('data', (c) => { out += c; });
+    child.stderr.on('data', (c) => { out += c; });
+    child.on('error', () => { clearTimeout(timer); resolve({ ok: false, detail: 'not found' }); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ ok: code === 0 && /Chrome/i.test(out), detail: code === 0 ? 'curl_cffi targets available' : 'missing — install official yt-dlp or curl_cffi' });
+    });
+  });
+}
+
+function probePlugins() {
+  return new Promise((resolve) => {
+    const cmd = resolveYtDlp();
+    // NOTE: this yt-dlp's --list-extractors omits plugin extractors, so probe
+    // via the verbose debug line instead, which names every loaded plugin.
+    const args = ['-v', '--simulate', 'probe://plugins'];
+    for (const d of bundledPluginDirs()) args.push('--plugin-dirs', d);
+    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    const timer = setTimeout(() => { child.kill(); resolve({ ok: false, detail: 'timed out' }); }, 15000);
+    child.stdout.on('data', (c) => { out += c; });
+    child.stderr.on('data', (c) => { out += c; });
+    child.on('error', () => { clearTimeout(timer); resolve({ ok: false, detail: 'yt-dlp not found' }); });
+    child.on('close', () => {
+      clearTimeout(timer);
+      const names = (out.match(/Extractor Plugins: (.*)/) || [])[1] || '';
+      const found = ['AnimepaheIE', 'HiAnimeIE'].filter((n) => names.includes(n));
+      resolve({
+        ok: found.length === 2,
+        found,
+        detail: found.length === 2 ? 'animepahe + hianime loaded'
+          : found.length === 1 ? `only ${found.join(', ')} loaded`
+          : 'anime plugins not installed',
+      });
+    });
+  });
+}
+
+function probeCookies(cmd) {
+  return new Promise((resolve) => {
+    if (!config.cookiesFromBrowser) {
+      return resolve({ ok: false, detail: 'not configured — set it under Settings → Downloads' });
+    }
+    const child = spawn(cmd, ['--simulate', '--cookies-from-browser', config.cookiesFromBrowser, 'https://example.com/'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    const timer = setTimeout(() => { child.kill(); resolve({ ok: false, detail: 'timed out' }); }, 20000);
+    child.stdout.on('data', (c) => { out += c; });
+    child.stderr.on('data', (c) => { out += c; });
+    child.on('error', () => { clearTimeout(timer); resolve({ ok: false, detail: 'yt-dlp not found' }); });
+    child.on('close', () => {
+      clearTimeout(timer);
+      const m = out.match(/Extracted (\d+) cookies/);
+      if (m && Number(m[1]) > 0) resolve({ ok: true, detail: `${m[1]} cookies from ${config.cookiesFromBrowser}` });
+      else if (/Extracted 0 cookies/.test(out)) resolve({ ok: false, detail: `could not decrypt ${config.cookiesFromBrowser}'s cookies (Linux: try a "+gnomekeyring" suffix)` });
+      else if (/could not find/i.test(out)) resolve({ ok: false, detail: `browser "${config.cookiesFromBrowser}" not found` });
+      else if (/firefox cookies database/i.test(out)) resolve({ ok: false, detail: 'no Firefox cookies at that location — Firefox forks (Floorp, Zen, …) need the full profile path, e.g. firefox:~/.floorp/xxxx.default-default' });
+      else resolve({ ok: false, detail: 'cookie extraction failed' });
+    });
+  });
+}
+
+const activeDownloads = new Map(); // url -> in-flight promise (yt-dlp breaks on two processes writing one .part file)
+
 function downloadVideo(url) {
+  if (activeDownloads.has(url)) return activeDownloads.get(url);
+  const job = runDownload(url).finally(() => activeDownloads.delete(url));
+  activeDownloads.set(url, job);
+  return job;
+}
+
+function runDownload(url) {
   return new Promise((resolve, reject) => {
     fs.mkdirSync(config.downloadDir, { recursive: true });
     const outTemplate = path.join(config.downloadDir, '%(title).150B [%(id)s].%(ext)s');
     const args = [
       url,
-      '-f', 'bv*+ba/b',
+      // Ignore ~/.config/yt-dlp/config etc. — users' personal configs (e.g.
+      // youtube player_client overrides) would otherwise break app downloads.
+      '--ignore-config',
+      '-f', DOWNLOAD_QUALITY_FORMATS[config.downloadQuality] || DOWNLOAD_QUALITY_FORMATS.best,
+      '--impersonate', 'chrome',
+      // HLS streams must go through yt-dlp's native downloader: ffmpeg can't
+      // do Chrome TLS impersonation or carry cf_clearance cookies, so the CDN
+      // 403s its segment requests ("ffmpeg exited with code 8").
+      '--hls-prefer-native',
+      // Space out page requests a little — the embed host rate-limits bursts,
+      // which otherwise shows up as a confusing "Requested format is not available".
+      '--sleep-requests', '1',
       '--merge-output-format', 'mp4',
       '--restrict-filenames',
       '--no-playlist',
       '--newline',
       '--no-color',
       '-o', outTemplate,
+      // --print implies quiet mode, which would suppress all [download] progress
+      // lines (bar stuck at 0%) — --progress turns them back on.
+      '--progress',
       '--print', 'after_move:filepath'
-    ];
-    const proc = spawn('yt-dlp', args);
+    ];    // Some CDNs only serve video to a session that already visited the page in
+    // a browser — pass that browser's cookies when the user configured one.
+    if (config.cookiesFromBrowser) {
+      args.splice(1, 0, '--cookies-from-browser', config.cookiesFromBrowser);
+      // Cloudflare pins cf_clearance cookies to the exact user-agent that earned
+      // them, so reuse the cookie browser's UA. Chromium UAs only vary by major
+      // version; Firefox-family forks masquerade as their upstream version.
+      const browserName = config.cookiesFromBrowser.split('+')[0].split(':')[0].toLowerCase();
+      const kind = CHROMIUM_UA_BROWSERS.has(browserName) ? 'chromium'
+        : FIREFOX_FAMILY_BROWSERS.has(browserName) ? 'firefox' : null;
+      if (kind) {
+        try {
+          const major = browserMajorVersion(browserName);
+          if (major) args.splice(1, 0, '--user-agent', browserUserAgent(kind, major));
+        } catch { /* browser not on PATH — yt-dlp will just use its default UA */ }
+      }
+    }
+    for (const d of bundledPluginDirs()) args.splice(1, 0, '--plugin-dirs', d);
+    const ffmpeg = resolveFfmpeg();
+    if (ffmpeg !== 'ffmpeg') args.splice(1, 0, '--ffmpeg-location', ffmpeg);
+    const proc = spawn(resolveYtDlp(), args);
     let finalPath = '';
     let stderr = '';
     let stdoutBuffer = '';
@@ -467,7 +743,9 @@ function downloadVideo(url) {
         if (!trimmed) continue;
         const percentMatch = trimmed.match(/\[download\]\s+([\d.]+)%/);
         if (percentMatch) {
-          send('video:progress', { percent: parseFloat(percentMatch[1]) });
+          // Tagged with the URL so the renderer can tell concurrent downloads
+          // apart (queue-while-downloading means two yt-dlps can run at once).
+          send('video:progress', { percent: parseFloat(percentMatch[1]), url });
         }
         if ((trimmed.includes('/') || trimmed.includes('\\')) && !trimmed.startsWith('[')) {
           finalPath = trimmed;
@@ -487,12 +765,21 @@ function downloadVideo(url) {
         if ((trimmed.includes('/') || trimmed.includes('\\')) && !trimmed.startsWith('[')) finalPath = trimmed;
       }
       if (code === 0 && finalPath) {
-        send('video:progress', { percent: 100 });
+        send('video:progress', { percent: 100, url });
         resolve(finalPath);
       } else if (code === 0) {
         reject(new Error('yt-dlp finished but no output file path was captured.'));
       } else {
-        reject(new Error(stderr.trim().split('\n').pop() || `yt-dlp exited with code ${code}`));
+        const lastErr = stderr.trim().split('\n').pop() || `yt-dlp exited with code ${code}`;
+        // Direct CDN links (e.g. animepahe's vault-*.uwucdn.top mp4s) carry a
+        // short-lived signed token that expires within minutes — a 403 there
+        // almost always means the link died, not that the app is broken.
+        if (/HTTP Error 403|Forbidden/i.test(lastErr) && /uwucdn|vault-|\?file=/.test(url)) {
+          reject(new Error('This download link has expired or was rejected by the CDN. '
+            + 'Copy a fresh one right before downloading, or better, paste the animepahe watch-page URL instead.'));
+        } else {
+          reject(new Error(lastErr));
+        }
       }
     });
   });
@@ -502,6 +789,29 @@ function downloadVideo(url) {
 // IPC
 // ---------------------------------------------------------------------------
 ipcMain.handle('config:get', () => config);
+
+// Powers the first-run checklist / Settings → Downloads → “Run setup check”.
+ipcMain.handle('health:check', async () => {
+  const ytdlp = resolveYtDlp();
+  const [ytdlpInfo, ffmpegInfo, impersonation, plugins, cookies] = await Promise.all([
+    probeBinary('yt-dlp', ytdlp, '--version'),
+    probeBinary('ffmpeg', resolveFfmpeg(), '-version'),
+    probeImpersonation(ytdlp),
+    probePlugins(),
+    probeCookies(ytdlp),
+  ]);
+  const ffmpegOk = ffmpegInfo.ok || /ffmpeg/i.test(ffmpegInfo.detail);
+  return {
+    items: [
+      { id: 'ytdlp', label: 'yt-dlp', ok: ytdlpInfo.ok, detail: ytdlpInfo.detail, fix: ytdlpInfo.ok ? null : 'Install yt-dlp (see README) — the setup.exe / AppImage bundles it automatically.' },
+      { id: 'ffmpeg', label: 'ffmpeg', ok: ffmpegOk, detail: ffmpegInfo.detail, fix: ffmpegOk ? null : 'Install ffmpeg — needed to merge video/audio streams into one file.' },
+      { id: 'impersonate', label: 'Browser impersonation (Cloudflare bypass)', ok: impersonation.ok, detail: impersonation.detail, fix: impersonation.ok ? null : 'Use the official yt-dlp binary, or pip install curl_cffi.' },
+      { id: 'plugins', label: 'Anime site plugins (animepahe / hianime)', ok: plugins.ok, detail: plugins.detail, fix: plugins.ok ? null : 'Run the plugin install commands in the README (requirement #3).' },
+      { id: 'cookies', label: 'Browser cookies (animepahe session)', ok: cookies.ok, detail: cookies.detail, fix: cookies.ok ? null : 'Settings → Downloads → set your cookie browser (e.g. brave, chrome). Visit animepahe once in that browser first so it earns the Cloudflare clearance.' },
+    ],
+    allOk: ytdlpInfo.ok && ffmpegOk && impersonation.ok && plugins.ok && cookies.ok,
+  };
+});
 
 ipcMain.handle('config:set', (_e, partial) => {
   config = { ...config, ...partial };
@@ -590,6 +900,8 @@ ipcMain.handle('theme:import', async () => {
 ipcMain.handle('room:host', async (_e, { username }) => {
   try {
     const { code } = await hostRoom(username);
+    activeRoomCode = code;
+    updateDiscordRpc();
     return { ok: true, code };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -599,6 +911,8 @@ ipcMain.handle('room:host', async (_e, { username }) => {
 ipcMain.handle('room:join', async (_e, { code, username }) => {
   try {
     await joinRoom(code, username);
+    activeRoomCode = code;
+    updateDiscordRpc();
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -607,6 +921,8 @@ ipcMain.handle('room:join', async (_e, { code, username }) => {
 
 ipcMain.handle('room:leave', () => {
   stopEverything();
+  activeRoomCode = null;
+  clearDiscordRpc();
   return { ok: true };
 });
 
@@ -648,4 +964,11 @@ ipcMain.handle('sync:request', () => {
 
 ipcMain.handle('shell:open-path', (_e, target) => {
   shell.showItemInFolder(target);
+});
+
+ipcMain.handle('shell:open-external', (_e, url) => {
+  // Only https/http — never let a renderer ask the OS to open arbitrary schemes.
+  if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
+    shell.openExternal(url);
+  }
 });

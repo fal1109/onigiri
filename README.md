@@ -14,6 +14,9 @@ watch together app that downloads the videos so no one suffers from internet lag
    - Windows: powershell as administrator; `winget install Gyan.FFmpeg -e`
 
 
+	-# ssshhh [otaku/](otaku/)
+
+
 ### the app is still in development, expect bugs
 
 ## THIS IS AI SLOP. I MADE THIS FOR A GROUP OF FRIENDS AND YOU CAN DO WHATEVER YOU WANT WITH IT.

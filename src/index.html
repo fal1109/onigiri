@@ -194,7 +194,7 @@
 
           <div id="bottom-bar" class="bottom-bar">
             <div class="stage-toolbar">
-              <input type="text" id="video-url" class="url-input" placeholder="Paste a video link…">
+              <input type="text" id="video-url" class="url-input" placeholder="Paste a video link…" title="Works with any site yt-dlp supports. Some sites need a one-time extra setup — see otaku/otaku.md.">
               <button id="add-queue-btn" class="btn btn-filled">Add to queue</button>
               <button id="skip-btn" class="icon-btn" title="Skip to next in queue" aria-label="Skip">
                 <svg viewBox="0 0 24 24">
@@ -234,6 +234,7 @@
             <button type="button" class="settings-nav-item" data-panel="discord">Discord</button>
             <button type="button" class="settings-nav-item" data-panel="connection">Connection</button>
             <button type="button" class="settings-nav-item" data-panel="emotes">Emotes</button>
+            <button type="button" class="settings-nav-item" data-panel="about">About</button>
           </div>
 
           <div class="settings-panels">
@@ -290,6 +291,17 @@
                 <input type="checkbox" id="setting-parallax">
                 <span>Cursor-based parallax on the background</span>
               </label>
+
+              <div class="field">
+                <div class="switch-row">
+                  <span id="bg-switch-label">Show background image</span>
+                  <label class="md-switch">
+                    <input type="checkbox" id="setting-bg-enabled" role="switch">
+                    <span class="md-switch-track"><span class="md-switch-thumb"></span></span>
+                  </label>
+                </div>
+                <span class="field-hint">Turn the image off without losing the URL — flip it back on anytime.</span>
+              </div>
             </div>
 
             <div class="settings-panel" data-panel="profile" hidden>
@@ -308,6 +320,25 @@
                   <button type="button" id="browse-dir-btn" class="btn btn-outlined btn-small">Browse</button>
                 </div>
               </label>
+              <label class="field">
+                <span>Download quality</span>
+                <div class="segmented" id="quality-toggle">
+                  <button type="button" data-quality-value="360">360p</button>
+                  <button type="button" data-quality-value="480">480p</button>
+                  <button type="button" data-quality-value="720">720p</button>
+                  <button type="button" data-quality-value="1080">1080p</button>
+                  <button type="button" data-quality-value="best">Best</button>
+                </div>
+                <span class="field-hint">Caps the resolution, falling back to the best stream below it. “Best” takes whatever is highest.</span>
+              </label>
+              <label class="field">
+                <span>Cookie browser <span style="opacity:.6">(certain sites need this)</span></span>
+                <input type="text" id="setting-cookie-browser" placeholder="brave — or brave+gnomekeyring on Linux">
+                <span class="field-hint">Name the browser you're logged in with (visit the site once in it first). Firefox forks (Floorp, Zen, LibreWolf…): use <code>firefox:/full/path/to/profile</code>. Leave blank if you don't need it.</span>
+              </label>
+              <div class="field-row">
+                <button type="button" id="run-setup-check-btn" class="btn btn-outlined btn-small">Run setup check</button>
+              </div>
             </div>
 
             <div class="settings-panel" data-panel="discord" hidden>
@@ -316,6 +347,36 @@
                 <input type="text" id="setting-webhook" placeholder="https://discord.com/api/webhooks/…">
                 <span class="field-hint">Room chat gets posted here (host only).</span>
               </label>
+
+              <h3 class="panel-subheading">Rich Presence</h3>
+              <div class="field">
+                <div class="switch-row">
+                  <span>Show what I'm watching on Discord</span>
+                  <label class="md-switch">
+                    <input type="checkbox" id="setting-rpc-enabled" role="switch">
+                    <span class="md-switch-track"><span class="md-switch-thumb"></span></span>
+                  </label>
+                </div>
+              </div>
+              <div class="field">
+                <div class="switch-row">
+                  <span>Show participant count</span>
+                  <label class="md-switch">
+                    <input type="checkbox" id="setting-rpc-participants" role="switch">
+                    <span class="md-switch-track"><span class="md-switch-thumb"></span></span>
+                  </label>
+                </div>
+              </div>
+              <div class="field">
+                <div class="switch-row">
+                  <span>Show GitHub button</span>
+                  <label class="md-switch">
+                    <input type="checkbox" id="setting-rpc-github" role="switch">
+                    <span class="md-switch-track"><span class="md-switch-thumb"></span></span>
+                  </label>
+                </div>
+              </div>
+              <span class="field-hint">Needs Discord running on this machine. Server-side developers must also put a Rich Presence application ID in main.js.</span>
             </div>
 
             <div class="settings-panel" data-panel="connection" hidden>
@@ -347,12 +408,40 @@
               <div id="custom-emoji-list" class="custom-emoji-list"></div>
             </div>
 
+            <div class="settings-panel" data-panel="about" hidden>
+              <div class="about-card">
+                <img class="about-avatar" src="assets/fal.png" alt="fal1109's avatar">
+                <div class="about-info">
+                  <div class="about-name">fal1109</div>
+                  <button type="button" id="about-tagline" class="about-tagline">for the onigiri boomer's council</button>
+                  <a class="about-site" href="https://fa11.netlify.app" target="_blank" rel="noopener">fa11.netlify.app</a>
+                </div>
+                <a class="about-github" href="https://github.com/fal1109" target="_blank" rel="noopener" title="github.com/fal1109">
+                  <svg viewBox="0 0 16 16" width="22" height="22" aria-hidden="true" fill="currentColor">
+                    <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/>
+                  </svg>
+                </a>
+              </div>
+            </div>
+
           </div>
         </div>
 
         <div class="dialog-actions">
           <button type="button" id="settings-cancel" class="btn btn-text">Cancel</button>
           <button type="button" id="settings-save" class="btn btn-filled">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="health-dialog" class="dialog-scrim" hidden>
+      <div class="dialog dialog-health" role="dialog" aria-labelledby="health-title">
+        <h2 id="health-title">Setup check</h2>
+        <p class="health-sub">Everything needed for video downloads, checked live.</p>
+        <div id="health-list" class="health-list"></div>
+        <div class="dialog-actions">
+          <button type="button" id="health-rerun" class="btn btn-text">Check again</button>
+          <button type="button" id="health-done" class="btn btn-filled">Done</button>
         </div>
       </div>
     </div>
