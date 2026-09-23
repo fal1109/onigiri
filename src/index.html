@@ -113,6 +113,23 @@
       <div class="stage">
         <div class="video-wrap">
           <video id="player"></video>
+
+          <div id="player-controls" class="player-controls">
+            <button id="play-pause-btn" class="icon-btn" title="Play/Pause" aria-label="Play or pause">
+              <svg id="play-icon" viewBox="0 0 24 24"><path d="M8 5v14l11-7Z"/></svg>
+              <svg id="pause-icon" viewBox="0 0 24 24" hidden><path d="M6 5h4v14H6Zm8 0h4v14h-4Z"/></svg>
+            </button>
+            <span id="player-time-current" class="player-time">0:00</span>
+            <div id="player-seek-track" class="player-seek-track">
+              <div id="player-seek-fill" class="player-seek-fill"></div>
+            </div>
+            <span id="player-time-duration" class="player-time">0:00</span>
+            <button id="mute-btn" class="icon-btn" title="Mute" aria-label="Mute">
+              <svg id="volume-icon" viewBox="0 0 24 24"><path d="M3 10v4h4l5 5V5L7 10H3Zm13.5 2A4.5 4.5 0 0 0 14 7.97v8.05A4.5 4.5 0 0 0 16.5 12Z"/></svg>
+              <svg id="muted-icon" viewBox="0 0 24 24" hidden><path d="M3 10v4h4l5 5V5L7 10H3Zm15.54 2 2.46-2.46-1.41-1.41L17.13 10l-2.46-2.46-1.41 1.41L15.72 11.4l-2.46 2.46 1.41 1.41 2.46-2.46 2.46 2.46 1.41-1.41Z"/></svg>
+            </button>
+            <input type="range" id="volume-slider" class="volume-slider" min="0" max="100" value="40">
+          </div>
           <div id="video-empty" class="video-empty">
             <svg viewBox="0 0 24 24" class="video-empty-icon"><path d="M8 5v14l11-7Z"/></svg>
             <p>Add a video to start</p>

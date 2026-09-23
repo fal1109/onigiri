@@ -32,7 +32,7 @@ contextBridge.exposeInMainWorld('onigiri', {
   queueNext: () => ipcRenderer.invoke('queue:next'),
 
   // player + chat events out
-  sendPlayerEvent: (action, time) => ipcRenderer.invoke('player:event', { action, time }),
+  sendPlayerEvent: (action, time, itemId) => ipcRenderer.invoke('player:event', { action, time, itemId }),
   sendChat: (username, text) => ipcRenderer.invoke('chat:send', { username, text }),
   sendTyping: (username) => ipcRenderer.invoke('chat:typing', { username }),
   sendTypingStop: (username) => ipcRenderer.invoke('chat:typing-stop', { username }),

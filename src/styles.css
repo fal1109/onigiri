@@ -335,6 +335,40 @@ button.chip:hover{ filter:brightness(1.1); }
 .video-empty-icon{ width:56px; height:56px; fill: var(--md-outline); opacity:.6; }
 .video-empty p{ font-size:13px; margin:0; }
 
+/* Custom playback control bar — replaces native <video controls> entirely
+   so play/pause/seek can genuinely be host/DJ-only while volume and time
+   stay available to everyone (a native control bar is all-or-nothing). */
+.player-controls{
+  position:absolute; left:0; right:0; bottom:0; z-index:5;
+  height:52px; padding:0 14px;
+  display:flex; align-items:center; gap:10px;
+  background: linear-gradient(to top, rgba(0,0,0,.72), rgba(0,0,0,0));
+}
+.player-controls .icon-btn{
+  width:32px; height:32px; flex-shrink:0; color:#fff;
+}
+.player-controls .icon-btn svg{ width:19px; height:19px; }
+.player-controls .icon-btn:hover{ background: rgba(255,255,255,.15); }
+.player-time{
+  font-size:11.5px; color:#fff; flex-shrink:0; min-width:34px;
+  text-align:center; font-variant-numeric: tabular-nums;
+}
+.player-seek-track{
+  flex:1; height:4px; border-radius: var(--shape-full);
+  background: rgba(255,255,255,.28); position:relative; cursor:pointer;
+}
+.player-seek-fill{
+  position:absolute; left:0; top:0; bottom:0; width:0%;
+  background:#fff; border-radius: var(--shape-full);
+}
+.volume-slider{ width:80px; flex-shrink:0; accent-color:#fff; }
+
+/* Viewers without playback permission: no play/pause button at all, and
+   the seek bar becomes a read-only progress indicator (still visible,
+   just not draggable) — volume and the time text are untouched by this. */
+.video-wrap.no-control #play-pause-btn{ display:none; }
+.video-wrap.no-control .player-seek-track{ cursor:default; pointer-events:none; }
+
 .stage-toolbar{ display:flex; gap:10px; flex-shrink:0; }
 .url-input{
   flex:1; height:44px; padding:0 14px;

@@ -136,10 +136,39 @@ function send(channelName, payload) {
 // ---------------------------------------------------------------------------
 let supabaseClient = null;
 let channel = null;
-let role = null;              // 'host' | 'client' | null
+let role = null;              // 'host' | 'client' — who CREATED vs JOINED; no longer used for permissions
 let currentUsername = '';
 let sawInitialPresenceSync = false;
 let roomState = { isPlaying: false, time: 0, queue: [], queueIndex: -1, djUsernames: [] };
+
+// Host succession: the room's creator is the host for as long as they're
+// present. If they disconnect, whoever's been connected longest becomes
+// host in their place — computed identically by every peer from the same
+// presence data, so there's no election/coordination needed. The instant
+// the original host reconnects, they reclaim it (their username still
+// takes priority over anyone standing in).
+let originalHostUsername = null;
+let amIHost = false;
+
+function computeActiveHost(presenceState) {
+  const entries = Object.values(presenceState).flat();
+  if (originalHostUsername && entries.some((e) => e.username === originalHostUsername)) {
+    return originalHostUsername;
+  }
+  let earliest = null;
+  for (const e of entries) {
+    if (!earliest || (e.joinedAt ?? Infinity) < (earliest.joinedAt ?? Infinity)) earliest = e;
+  }
+  return earliest ? earliest.username : null;
+}
+
+function pushPeers(ch) {
+  const state = ch.presenceState();
+  const participants = Object.values(state).flat().map((p) => ({ username: p.username, avatarUrl: p.avatarUrl || null }));
+  const activeHost = computeActiveHost(state);
+  amIHost = activeHost === currentUsername;
+  send('net:peers', { participants, activeHost, amIHost });
+}
 
 function getSupabaseClient() {
   if (!config.supabaseUrl || !config.supabaseKey) {
@@ -163,15 +192,18 @@ function randomRoomCode() {
 function handleBroadcast(type, payload) {
   switch (type) {
     case 'player': {
-      // Ignore playback events meant for a different video than the one we
-      // actually have loaded — without this, a participant stuck on an old
-      // video (e.g. their download of the current one failed) can still
-      // seek/play/pause everyone else's player out from under them.
+      // main.js's own bookkeeping (used to answer sync-requests) only
+      // accepts events that match what WE believe is the current queue
+      // item. But relaying to the renderer is unconditional — the renderer
+      // has its own ground-truth check against the video it has actually
+      // loaded (currentItemId), which is the only thing that can't lag
+      // behind a fast-moving queue the way this roomState mirror can.
       const localCurrent = roomState.queue[roomState.queueIndex];
       const localItemId = localCurrent ? localCurrent.id : null;
-      if (payload.queueItemId !== localItemId) break;
-      roomState.isPlaying = payload.action === 'play' ? true : payload.action === 'pause' ? false : roomState.isPlaying;
-      roomState.time = payload.time;
+      if (payload.queueItemId === localItemId) {
+        roomState.isPlaying = payload.action === 'play' ? true : payload.action === 'pause' ? false : roomState.isPlaying;
+        roomState.time = payload.time;
+      }
       send('net:remote-player-event', payload);
       break;
     }
@@ -182,7 +214,7 @@ function handleBroadcast(type, payload) {
       break;
     case 'chat':
       send('net:chat', payload);
-      if (role === 'host') postToDiscord(payload.username, payload.text);
+      if (amIHost) postToDiscord(payload.username, payload.text);
       break;
     case 'typing':
       send('net:typing', payload);
@@ -224,15 +256,27 @@ function subscribeToRoom(code, username) {
     ch.on('broadcast', { event: 'sync-request' }, () => {
       ch.send({
         type: 'broadcast', event: 'sync-response',
-        payload: { time: roomState.time, isPlaying: roomState.isPlaying, queue: roomState.queue, queueIndex: roomState.queueIndex, djUsernames: roomState.djUsernames }
+        payload: {
+          time: roomState.time, isPlaying: roomState.isPlaying, queue: roomState.queue,
+          queueIndex: roomState.queueIndex, djUsernames: roomState.djUsernames,
+          originalHostUsername
+        }
       });
     });
-    ch.on('broadcast', { event: 'sync-response' }, ({ payload }) => send('net:sync', payload));
+    ch.on('broadcast', { event: 'sync-response' }, ({ payload }) => {
+      // Learn who the room's true original host is from whoever answers —
+      // needed so a joiner's own host computation (which happens the
+      // instant presence syncs, likely before this response arrives) is
+      // correct from then on rather than staying stuck on "nobody special".
+      if (payload.originalHostUsername && !originalHostUsername) {
+        originalHostUsername = payload.originalHostUsername;
+        pushPeers(ch);
+      }
+      send('net:sync', payload);
+    });
 
     ch.on('presence', { event: 'sync' }, () => {
-      const state = ch.presenceState();
-      const participants = Object.values(state).flat().map((p) => ({ username: p.username, avatarUrl: p.avatarUrl || null }));
-      send('net:peers', { participants });
+      pushPeers(ch);
       sawInitialPresenceSync = true;
     });
     ch.on('presence', { event: 'join' }, ({ newPresences }) => {
@@ -247,7 +291,7 @@ function subscribeToRoom(code, username) {
 
     ch.subscribe(async (status, err) => {
       if (status === 'SUBSCRIBED') {
-        await ch.track({ username, avatarUrl: config.avatarUrl || null });
+        await ch.track({ username, avatarUrl: config.avatarUrl || null, joinedAt: Date.now() });
         resolve();
       } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
         reject(new Error((err && err.message) || 'Could not connect to Supabase Realtime — check your URL and anon key.'));
@@ -263,6 +307,7 @@ function subscribeToRoom(code, username) {
 function hostRoom(username) {
   stopEverything();
   role = 'host';
+  originalHostUsername = username;
   currentUsername = username;
   sawInitialPresenceSync = false;
   const code = randomRoomCode();
@@ -282,11 +327,10 @@ function broadcastEvent(event, payload) {
   channel.send({ type: 'broadcast', event, payload });
 }
 
-function sendPlayerEvent(action, time) {
-  const currentItem = roomState.queue[roomState.queueIndex];
+function sendPlayerEvent(action, time, itemId) {
   roomState.isPlaying = action === 'play' ? true : action === 'pause' ? false : roomState.isPlaying;
   roomState.time = time;
-  broadcastEvent('player', { action, time, ts: Date.now(), queueItemId: currentItem ? currentItem.id : null });
+  broadcastEvent('player', { action, time, ts: Date.now(), queueItemId: itemId });
 }
 
 function broadcastQueue() {
@@ -335,7 +379,7 @@ function queueNext() {
 function sendChat(username, text) {
   const payload = { username, text, ts: Date.now() };
   broadcastEvent('chat', payload);
-  if (role === 'host') postToDiscord(username, text);
+  if (amIHost) postToDiscord(username, text);
 }
 
 function sendTyping(username) { broadcastEvent('typing', { username }); }
@@ -345,7 +389,7 @@ function sendTypingStop(username) { broadcastEvent('typing-stop', { username });
 // no-ops for anyone else — the IPC handler below is the actual enforcement
 // point, this is just the shared implementation.
 function toggleDj(targetUsername) {
-  if (role !== 'host') return;
+  if (!amIHost) return;
   const idx = roomState.djUsernames.indexOf(targetUsername);
   if (idx === -1) roomState.djUsernames.push(targetUsername);
   else roomState.djUsernames.splice(idx, 1);
@@ -365,6 +409,8 @@ function stopEverything() {
     channel = null;
   }
   role = null;
+  originalHostUsername = null;
+  amIHost = false;
   roomState = { isPlaying: false, time: 0, queue: [], queueIndex: -1, djUsernames: [] };
 }
 
@@ -571,8 +617,8 @@ ipcMain.handle('video:download', async (_e, { url }) => {
   return { filePath };
 });
 
-ipcMain.handle('player:event', (_e, { action, time }) => {
-  sendPlayerEvent(action, time);
+ipcMain.handle('player:event', (_e, { action, time, itemId }) => {
+  sendPlayerEvent(action, time, itemId);
   return { ok: true };
 });
 
@@ -589,7 +635,7 @@ ipcMain.handle('chat:send', (_e, { username, text }) => {
 
 ipcMain.handle('chat:typing', (_e, { username }) => { sendTyping(username); return { ok: true }; });
 ipcMain.handle('dj:toggle', (_e, { username }) => {
-  if (role !== 'host') throw new Error('Only the host can change DJ permissions.');
+  if (!amIHost) throw new Error('Only the host can change DJ permissions.');
   toggleDj(username);
   return { ok: true };
 });

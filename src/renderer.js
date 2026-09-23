@@ -49,10 +49,14 @@ const looksLikeImageUrl = (text) => IMAGE_URL_RE.test(text.trim());
 
 let config = null;
 let customEmotes = [];
-let role = null; // 'host' | 'client'
+let role = null; // 'host' | 'client' — who created vs joined the room; display-only now
+let amIHost = false; // who ACTUALLY has host powers right now — can move to someone else if the creator disconnects
+let seenFirstPeersUpdate = false;
 let username = '';
 let suppressPlayerEvents = false;
 let currentVideoUrl = null;
+let currentItemId = null; // id of the queue item ACTUALLY loaded in the player right now
+let lastKnownSyncedTime = 0; // last room-authoritative time, used to snap back unauthorized seeks
 let downloadingUrl = null;
 let downloadError = null; // { itemId, url, message } — local to this client only
 const predownloadedPaths = new Map(); // url -> local file path, ready to use instantly
@@ -71,7 +75,7 @@ let traySelectedIndex = 0;
 
 const $ = (sel) => document.querySelector(sel);
 const allEmotes = () => [...BUILTIN_EMOTES, ...customEmotes];
-const hasControlPermission = () => role === 'host' || djUsernames.includes(username);
+const hasControlPermission = () => amIHost || djUsernames.includes(username);
 
 // ---------------------------------------------------------------------- init
 (async function init() {
@@ -375,6 +379,7 @@ function wireSetup() {
     submitBtn.disabled = false;
     if (!res.ok) { toast(`Couldn't create room: ${res.error}`); return; }
     role = 'host';
+    amIHost = true; // optimistic — presence sync confirms this within moments
     enterRoom();
     setRoomChip(`Room code: ${res.code}`, res.code);
     toast(`Room created — share the code "${res.code}" with your friends`);
@@ -425,13 +430,17 @@ function setRoomChip(text, code) {
 async function leaveRoom() {
   await window.onigiri.leaveRoom();
   role = null;
+  amIHost = false;
+  seenFirstPeersUpdate = false;
+  djUsernames = [];
   currentVideoUrl = null;
+  currentItemId = null;
+  lastKnownSyncedTime = 0;
   downloadingUrl = null;
   downloadError = null;
   roomQueue = [];
   roomQueueIndex = -1;
   typingUsers = new Set();
-  djUsernames = [];
   lastParticipants = [];
   predownloadedPaths.clear();
   predownloadingUrls.clear();
@@ -505,9 +514,36 @@ function refreshBarVisibility(mouseY) {
 function wireRoom() {
   const video = $('#player');
 
-  video.addEventListener('play', () => { if (!suppressPlayerEvents) window.onigiri.sendPlayerEvent('play', video.currentTime); refreshBarVisibility(); });
-  video.addEventListener('pause', () => { if (!suppressPlayerEvents) window.onigiri.sendPlayerEvent('pause', video.currentTime); refreshBarVisibility(); });
-  video.addEventListener('seeked', () => { if (!suppressPlayerEvents) window.onigiri.sendPlayerEvent('seek', video.currentTime); });
+  video.addEventListener('play', () => {
+    if (suppressPlayerEvents) return;
+    if (!hasControlPermission()) { video.pause(); return; } // revert — no permission
+    window.onigiri.sendPlayerEvent('play', video.currentTime, currentItemId);
+    refreshBarVisibility();
+  });
+  video.addEventListener('pause', () => {
+    if (suppressPlayerEvents) return;
+    if (!hasControlPermission()) { video.play().catch(() => {}); return; } // revert
+    window.onigiri.sendPlayerEvent('pause', video.currentTime, currentItemId);
+    refreshBarVisibility();
+  });
+  video.addEventListener('seeked', () => {
+    if (suppressPlayerEvents) return;
+    if (!hasControlPermission()) { video.currentTime = lastKnownSyncedTime; return; } // snap back
+    lastKnownSyncedTime = video.currentTime;
+    window.onigiri.sendPlayerEvent('seek', video.currentTime, currentItemId);
+  });
+  video.addEventListener('volumechange', () => {
+    syncVolumeUi();
+    clearTimeout(video._volumeSaveTimer);
+    video._volumeSaveTimer = setTimeout(async () => {
+      config = await window.onigiri.setConfig({ playerVolume: video.volume });
+    }, 500);
+  });
+  video.addEventListener('timeupdate', updateSeekUi);
+  video.addEventListener('loadedmetadata', updateSeekUi);
+  video.addEventListener('play', updatePlayPauseIcon);
+  video.addEventListener('pause', updatePlayPauseIcon);
+  wirePlayerControls();
   document.addEventListener('mousemove', (e) => refreshBarVisibility(e.clientY));
 
   $('#leave-room-btn').addEventListener('click', leaveRoom);
@@ -666,6 +702,7 @@ async function loadVideo(url, itemId) {
   if (cached) {
     downloadError = null;
     setLocalVideo(cached);
+    currentItemId = itemId; // only set once the video is ACTUALLY loaded — see wireRoom's player listeners
     toast('Video ready');
     renderQueueList();
     return;
@@ -683,6 +720,7 @@ async function loadVideo(url, itemId) {
     const { filePath } = await window.onigiri.downloadVideo(url);
     predownloadedPaths.set(url, filePath);
     setLocalVideo(filePath);
+    currentItemId = itemId;
     toast('Video ready');
   } catch (err) {
     // Leave currentVideoUrl unset so a retry — or a future queue-update
@@ -690,6 +728,7 @@ async function loadVideo(url, itemId) {
     // again, instead of silently staying stuck on whatever was there
     // before (or nothing at all).
     currentVideoUrl = null;
+    currentItemId = null;
     downloadError = { itemId, url, message: err.message };
     toast(`Download failed: ${err.message}`);
     $('#video-empty').querySelector('p').textContent = `Download failed — ${err.message}`;
@@ -712,6 +751,8 @@ function setLocalVideo(filePath) {
   const video = $('#player');
   suppressPlayerEvents = true;
   video.src = toFileUrl(filePath);
+  video.volume = config.playerVolume ?? 0.16;
+  syncVolumeUi();
   video.load();
   setTimeout(() => { suppressPlayerEvents = false; }, 300);
   $('#video-empty').querySelector('p').textContent = 'Add a video to start';
@@ -722,7 +763,25 @@ function setLocalVideo(filePath) {
 function wireNetworkEvents() {
   const video = $('#player');
 
+  // Releases suppressPlayerEvents once the browser confirms a programmatic
+  // seek has actually finished (polling video.seeking) instead of guessing
+  // with a fixed timer. A too-short fixed timer is exactly what caused the
+  // multi-DJ desync: if suppression lifted before a seek truly settled, the
+  // resulting native 'seeked' event would fire un-suppressed and get
+  // rebroadcast — with two+ people doing this at once, it turns into an
+  // endless corrective ping-pong between everyone's players.
+  function releaseSuppressionWhenSettled(attemptsLeft = 40) {
+    if (!video.seeking || attemptsLeft <= 0) { suppressPlayerEvents = false; return; }
+    setTimeout(() => releaseSuppressionWhenSettled(attemptsLeft - 1), 50);
+  }
+
   window.onigiri.onRemotePlayerEvent((msg) => {
+    // The one check that actually matters: only apply this to the video
+    // we've genuinely finished loading. main.js's own copy of "what's
+    // current" updates the instant a queue change broadcasts, well before
+    // the download finishes — currentItemId only updates once the video is
+    // truly on screen, so this is the one comparison immune to that race.
+    if (msg.queueItemId !== currentItemId) return;
     suppressPlayerEvents = true;
     if (msg.action === 'play') {
       if (Math.abs(video.currentTime - msg.time) > 0.75) video.currentTime = msg.time;
@@ -733,7 +792,8 @@ function wireNetworkEvents() {
     } else if (msg.action === 'seek') {
       video.currentTime = msg.time;
     }
-    setTimeout(() => { suppressPlayerEvents = false; }, 150);
+    lastKnownSyncedTime = msg.time;
+    setTimeout(() => releaseSuppressionWhenSettled(), 30);
   });
 
   window.onigiri.onQueue(({ queue, queueIndex }) => {
@@ -744,14 +804,27 @@ function wireNetworkEvents() {
     if (list) { djUsernames = list; updateVideoControls(); renderParticipants(lastParticipants); }
     if (queue) await applyQueueState(queue, queueIndex);
     suppressPlayerEvents = true;
-    if (typeof time === 'number') video.currentTime = time;
+    if (typeof time === 'number') { video.currentTime = time; lastKnownSyncedTime = time; }
     if (isPlaying) video.play().catch(() => {}); else video.pause();
-    setTimeout(() => { suppressPlayerEvents = false; }, 150);
+    setTimeout(() => releaseSuppressionWhenSettled(), 30);
   });
 
   window.onigiri.onChat((msg) => { appendChat(msg); clearTyping(msg.username); });
   window.onigiri.onSystem((msg) => appendSystem(msg.text));
-  window.onigiri.onPeers(({ participants }) => { lastParticipants = participants || []; renderParticipants(lastParticipants); });
+  window.onigiri.onPeers(({ participants, amIHost: iAmHost }) => {
+    lastParticipants = participants || [];
+    if (typeof iAmHost === 'boolean') {
+      const becameHost = iAmHost && !amIHost;
+      amIHost = iAmHost;
+      updateVideoControls();
+      // Only worth announcing for someone who joined and is now standing in
+      // for a host who left — not on first entering (host or not), which
+      // would just be noise.
+      if (becameHost && seenFirstPeersUpdate && role === 'client') toast("You're now the host");
+    }
+    seenFirstPeersUpdate = true;
+    renderParticipants(lastParticipants);
+  });
   window.onigiri.onDj(({ djUsernames: list }) => {
     djUsernames = list || [];
     updateVideoControls();
@@ -773,11 +846,96 @@ function nameColor(name) {
   return `hsl(${hash % 360}, 60%, 55%)`;
 }
 
-// Play/pause/seek only reach the room from people the host has allowed to
-// control it — enforced by simply not giving them a native video control
-// surface to trigger those events with in the first place.
+// Play/pause/seek/skip are gated to host/DJs — but only those, not volume
+// or the time-remaining display, which are personal/informational and
+// should stay available to everyone. Native <video controls> was all-or-
+// nothing (and the old attempt to selectively disable pieces of it was
+// never actually wired up), so it's replaced entirely by the custom bar
+// below: the play button and seek bar respect this gate, volume and time
+// never do.
 function updateVideoControls() {
-  $('#player').controls = hasControlPermission();
+  $('.video-wrap').classList.toggle('no-control', !hasControlPermission());
+  updatePlayPauseIcon();
+}
+
+function formatTime(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return '0:00';
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function updatePlayPauseIcon() {
+  const video = $('#player');
+  $('#play-icon').hidden = !video.paused;
+  $('#pause-icon').hidden = video.paused;
+}
+
+function updateSeekUi() {
+  const video = $('#player');
+  const pct = video.duration ? (video.currentTime / video.duration) * 100 : 0;
+  $('#player-seek-fill').style.width = `${pct}%`;
+  $('#player-time-current').textContent = formatTime(video.currentTime);
+  $('#player-time-duration').textContent = formatTime(video.duration);
+}
+
+// Volume uses a quadratic curve rather than mapping the slider straight to
+// video.volume — linear volume feels disproportionately loud across most of
+// the slider's range (a well-known perceptual-loudness issue), which is
+// exactly what made "near max" unusably loud and "near zero" the only
+// comfortable setting. Squaring the slider fraction spreads the useful,
+// comfortable range across much more of the slider.
+function sliderToVolume(pct) { return Math.pow(pct / 100, 2); }
+function volumeToSlider(vol) { return Math.round(Math.sqrt(Math.max(vol, 0)) * 100); }
+
+function syncVolumeUi() {
+  const video = $('#player');
+  $('#volume-slider').value = volumeToSlider(video.volume);
+  const isMuted = video.muted || video.volume === 0;
+  $('#volume-icon').hidden = isMuted;
+  $('#muted-icon').hidden = !isMuted;
+}
+
+function seekTrackToTime(clientX) {
+  const video = $('#player');
+  const track = $('#player-seek-track');
+  const rect = track.getBoundingClientRect();
+  const frac = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+  return frac * (video.duration || 0);
+}
+
+function wirePlayerControls() {
+  const video = $('#player');
+
+  $('#play-pause-btn').addEventListener('click', () => {
+    if (!hasControlPermission()) return;
+    if (video.paused) video.play().catch(() => {}); else video.pause();
+  });
+
+  let seekDragging = false;
+  const trySeek = (e) => {
+    if (!hasControlPermission()) return;
+    video.currentTime = seekTrackToTime(e.clientX);
+  };
+  $('#player-seek-track').addEventListener('mousedown', (e) => {
+    if (!hasControlPermission()) return;
+    seekDragging = true;
+    trySeek(e);
+  });
+  document.addEventListener('mousemove', (e) => { if (seekDragging) trySeek(e); });
+  document.addEventListener('mouseup', () => { seekDragging = false; });
+
+  $('#mute-btn').addEventListener('click', () => {
+    video.muted = !video.muted;
+    if (!video.muted && video.volume === 0) video.volume = sliderToVolume(16); // unmuting from 0 should be audible
+  });
+
+  $('#volume-slider').addEventListener('input', (e) => {
+    video.muted = false;
+    video.volume = sliderToVolume(Number(e.target.value));
+  });
+
+  syncVolumeUi();
 }
 
 function renderParticipants(participants) {
@@ -787,7 +945,7 @@ function renderParticipants(participants) {
     const chip = document.createElement('div');
     const isSelf = name === username;
     const isDj = djUsernames.includes(name);
-    const hostCanToggle = role === 'host' && !isSelf;
+    const hostCanToggle = amIHost && !isSelf;
     chip.className = 'participant-chip' + (hostCanToggle ? ' is-host-controllable' : '');
     chip.title = hostCanToggle ? `Click to ${isDj ? 'revoke' : 'grant'} DJ` : '';
 

@@ -99,14 +99,6 @@ video reminding you to press Enter — it won't show again after that.
 
 ### Emotes
 
-Press **Ctrl+E** to open the emote tray, **Tab** to cycle through it,
-**Enter** to send the highlighted one — your own custom emotes are listed
-first, ahead of the built-ins. The emoji-face icon next to the chat box
-opens the same tray to click through instead.
-=======
-
-### Emotes
-
 ctrl+e opens the emote picker
 
 
