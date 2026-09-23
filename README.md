@@ -7,12 +7,11 @@ watch together app that downloads the videos so no one suffers from internet lag
 
 1. **yt-dlp** — the app shells out to it to download videos from a link.
    - Linux: `sudo apt install yt-dlp` (or `pip install -U yt-dlp`)
-   - Windows: download `yt-dlp.exe` from https://github.com/yt-dlp/yt-dlp/releases
-     and put it somewhere on your `PATH` (or next to the app).
+   - Windows: powershell as administrator; `winget install yt-dlp.yt-dlp`
 2. **ffmpeg** — needed by yt-dlp to merge separate video/audio streams into
    one file.
    - Linux: `sudo apt install ffmpeg`
-   - Windows: https://www.gyan.dev/ffmpeg/builds/ (add the `bin` folder to `PATH`)
+   - Windows: powershell as administrator; `winget install Gyan.FFmpeg -e`
 
 
 ### the app is still in development, expect bugs
