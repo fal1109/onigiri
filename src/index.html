@@ -148,9 +148,11 @@
               <span id="player-time-current" class="player-time">0:00</span>
               <div id="player-seek-track" class="player-seek-track">
                 <div id="player-seek-fill" class="player-seek-fill"></div>
+                <div id="player-seek-marker" class="player-seek-marker" aria-hidden="true"></div>
               </div>
               <span id="player-time-duration" class="player-time">0:00</span>
-              <button id="mute-btn" class="icon-btn" title="Mute" aria-label="Mute">
+              <div id="volume-ring" class="volume-ring" title="Mute or scroll to change volume" role="button" tabindex="0"
+                aria-label="Mute">
                 <svg id="volume-icon" viewBox="0 0 24 24">
                   <path d="M3 10v4h4l5 5V5L7 10H3Zm13.5 2A4.5 4.5 0 0 0 14 7.97v8.05A4.5 4.5 0 0 0 16.5 12Z" />
                 </svg>
@@ -158,17 +160,6 @@
                   <path
                     d="M3 10v4h4l5 5V5L7 10H3Zm15.54 2 2.46-2.46-1.41-1.41L17.13 10l-2.46-2.46-1.41 1.41L15.72 11.4l-2.46 2.46 1.41 1.41 2.46-2.46 2.46 2.46 1.41-1.41Z" />
                 </svg>
-              </button>
-              <div id="volume-ring" class="volume-ring" title="Scroll to change volume">
-                <button id="mute-btn" class="icon-btn" aria-label="Mute">
-                  <svg id="volume-icon" viewBox="0 0 24 24">
-                    <path d="M3 10v4h4l5 5V5L7 10H3Zm13.5 2A4.5 4.5 0 0 0 14 7.97v8.05A4.5 4.5 0 0 0 16.5 12Z" />
-                  </svg>
-                  <svg id="muted-icon" viewBox="0 0 24 24" hidden>
-                    <path
-                      d="M3 10v4h4l5 5V5L7 10H3Zm15.54 2 2.46-2.46-1.41-1.41L17.13 10l-2.46-2.46-1.41 1.41L15.72 11.4l-2.46 2.46 1.41 1.41 2.46-2.46 2.46 2.46 1.41-1.41Z" />
-                  </svg>
-                </button>
               </div>
             </div>
             <div id="video-empty" class="video-empty">

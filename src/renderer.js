@@ -519,12 +519,14 @@ function wireRoom() {
     if (!hasControlPermission()) { video.pause(); return; } // revert — no permission
     window.onigiri.sendPlayerEvent('play', video.currentTime, currentItemId);
     refreshBarVisibility();
+    updatePlayerControlsVisibility();
   });
   video.addEventListener('pause', () => {
     if (suppressPlayerEvents) return;
     if (!hasControlPermission()) { video.play().catch(() => {}); return; } // revert
     window.onigiri.sendPlayerEvent('pause', video.currentTime, currentItemId);
     refreshBarVisibility();
+    updatePlayerControlsVisibility();
   });
   video.addEventListener('seeked', () => {
     if (suppressPlayerEvents) return;
@@ -542,9 +544,13 @@ function wireRoom() {
   video.addEventListener('timeupdate', updateSeekUi);
   video.addEventListener('loadedmetadata', updateSeekUi);
   video.addEventListener('play', updatePlayPauseIcon);
+  video.addEventListener('playing', updatePlayPauseIcon);
   video.addEventListener('pause', updatePlayPauseIcon);
+  video.addEventListener('play', updatePlayerControlsVisibility);
+  video.addEventListener('pause', updatePlayerControlsVisibility);
   wirePlayerControls();
   document.addEventListener('mousemove', (e) => refreshBarVisibility(e.clientY));
+  $('.video-wrap').addEventListener('mousemove', showPlayerControls);
 
   $('#leave-room-btn').addEventListener('click', leaveRoom);
 
@@ -856,6 +862,7 @@ function nameColor(name) {
 function updateVideoControls() {
   $('.video-wrap').classList.toggle('no-control', !hasControlPermission());
   updatePlayPauseIcon();
+  updatePlayerControlsVisibility();
 }
 
 function formatTime(seconds) {
@@ -867,8 +874,15 @@ function formatTime(seconds) {
 
 function updatePlayPauseIcon() {
   const video = $('#player');
-  $('#play-icon').hidden = !video.paused;
-  $('#pause-icon').hidden = video.paused;
+  const playIcon = $('#play-icon');
+  const pauseIcon = $('#pause-icon');
+  if (video.paused) {
+    playIcon.removeAttribute('hidden');
+    pauseIcon.setAttribute('hidden', '');
+  } else {
+    playIcon.setAttribute('hidden', '');
+    pauseIcon.removeAttribute('hidden');
+  }
   $('#player-seek-track').classList.toggle('is-playing', !video.paused); // added
 }
 
@@ -877,8 +891,32 @@ function updateSeekUi() {
   const video = $('#player');
   const pct = video.duration ? (video.currentTime / video.duration) * 100 : 0;
   $('#player-seek-fill').style.width = `${pct}%`;
+  $('#player-seek-marker').style.left = `${pct}%`;
   $('#player-time-current').textContent = formatTime(video.currentTime);
   $('#player-time-duration').textContent = formatTime(video.duration);
+}
+
+const PLAYER_CONTROLS_HIDE_DELAY = 1600;
+let playerControlsHideTimer = null;
+
+function showPlayerControls() {
+  const videoWrap = $('.video-wrap');
+  videoWrap.classList.remove('player-controls-hidden');
+  clearTimeout(playerControlsHideTimer);
+  if (!$('#player').paused) {
+    playerControlsHideTimer = setTimeout(() => {
+      videoWrap.classList.add('player-controls-hidden');
+    }, PLAYER_CONTROLS_HIDE_DELAY);
+  }
+}
+
+function updatePlayerControlsVisibility() {
+  if ($('#player').paused) {
+    clearTimeout(playerControlsHideTimer);
+    $('.video-wrap').classList.remove('player-controls-hidden');
+    return;
+  }
+  showPlayerControls();
 }
 
 // Volume uses a quadratic curve rather than mapping the slider straight to
@@ -911,8 +949,12 @@ function wirePlayerControls() {
 
   $('#play-pause-btn').addEventListener('click', () => {
     if (!hasControlPermission()) return;
-    if (video.paused) video.play().catch(() => {}); else video.pause();
-     updatePlayPauseIcon();
+    if (video.paused) {
+      video.play().then(updatePlayPauseIcon).catch(updatePlayPauseIcon);
+    } else {
+      video.pause();
+      updatePlayPauseIcon();
+    }
   });
 
   let seekDragging = false;
@@ -928,12 +970,19 @@ function wirePlayerControls() {
   document.addEventListener('mousemove', (e) => { if (seekDragging) trySeek(e); });
   document.addEventListener('mouseup', () => { seekDragging = false; });
 
-  $('#mute-btn').addEventListener('click', () => {
+  $('#volume-ring').addEventListener('click', () => {
     video.muted = !video.muted;
     if (!video.muted && video.volume === 0) video.volume = sliderToVolume(16); // unmuting from 0 should be audible
   });
 
-    $('#volume-ring').addEventListener('wheel', (e) => {
+  $('#volume-ring').addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();
+    video.muted = !video.muted;
+    if (!video.muted && video.volume === 0) video.volume = sliderToVolume(16);
+  });
+
+  $('#volume-ring').addEventListener('wheel', (e) => {
     e.preventDefault();
     const current = video.muted ? 0 : volumeToSlider(video.volume);
     video.muted = false;
