@@ -421,10 +421,14 @@ button.chip:hover{ filter:brightness(1.1); }
   font-size:11px; font-weight:700;
 }
 
-.progress-row{ display:flex; align-items:center; gap:10px; flex-shrink:0; }
-.progress-track{ flex:1; height:6px; border-radius: var(--shape-full); background: var(--md-surface-container-highest); overflow:hidden; }
-.progress-fill{ height:100%; width:0%; background: var(--md-primary); transition: width .2s ease; }
-#progress-label{ font-size:12px; color: var(--md-on-surface-variant); width:40px; text-align:right; }
+/* Per-queue-item download progress — a bare line in the item's action
+   group, to the left of the retry/play/remove buttons. */
+.queue-item-progress{ display:flex; align-items:center; gap:6px; margin-right:6px; }
+.queue-item-progress-track{
+  width:72px; height:4px; border-radius: var(--shape-full);
+  background: var(--md-surface-container-highest); overflow:hidden;
+}
+.queue-item-progress-fill{ height:100%; width:0%; background: var(--md-primary); transition: width .25s ease; }
 
 /* ---------------------------------- Queue -------------------------------*/
 .queue-panel{
@@ -610,9 +614,10 @@ button.chip:hover{ filter:brightness(1.1); }
 .dialog-actions{ display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
 
 /* Settings, specifically: wider, two-column (section nav + the active
-   panel's fields) instead of one long stacked list. */
+   panel's fields) instead of one long stacked list. The body gets a fixed
+   height so switching categories never resizes the whole dialog. */
 .dialog-settings{ width:640px; }
-.settings-body{ display:flex; gap:24px; min-height:340px; }
+.settings-body{ display:flex; gap:24px; height:400px; }
 .settings-nav{
   width:150px; flex-shrink:0;
   display:flex; flex-direction:column; gap:2px;
@@ -626,19 +631,53 @@ button.chip:hover{ filter:brightness(1.1); }
 }
 .settings-nav-item:hover{ background: var(--md-surface-container-highest); }
 .settings-nav-item.is-active{ background: var(--md-primary-container); color: var(--md-on-primary-container); font-weight:500; }
-.settings-panels{ flex:1; min-width:0; max-height:420px; overflow-y:auto; padding-right:4px; }
+/* Horizontal padding (not just right) so glow effects that reach past
+   their element — the range thumb's halo, the active swatch's border —
+   aren't sliced off by this scroll container's clip edge. */
+.settings-panels{ flex:1; min-width:0; height:100%; overflow-y:auto; padding:0 6px; }
+.settings-panel .field{ margin-bottom:18px; }
 .settings-panel .field:last-child{ margin-bottom:0; }
 
 .field-checkbox{ display:flex; align-items:center; gap:10px; flex-direction:row; }
 .field-checkbox input{ width:16px; height:16px; accent-color: var(--md-primary); }
 .field-checkbox span{ font-size:13px; color: var(--md-on-surface); }
-input[type="range"]{ width:100%; accent-color: var(--md-primary); }
+/* Range inputs styled like the player's seek line: thin filled track, no
+   native padding so 0% truly touches the left edge. The filled portion is a
+   gradient driven by --fill-pct, set from JS on load + input. */
+input[type="range"]{
+  width:100%; height:16px; margin:0;
+  /* Neutralize .field input's text-field chrome — it matches with equal
+     specificity and would otherwise give the slider a bordered pill and a
+     14px-inset track. */
+  border:none; padding:0;
+  -webkit-appearance:none; appearance:none;
+  background: linear-gradient(to right,
+      var(--md-primary) var(--fill-pct, 50%),
+      var(--md-surface-container-highest) var(--fill-pct, 50%)) no-repeat center / 100% 4px;
+  border-radius: var(--shape-full);
+  outline:none; cursor:pointer; accent-color: var(--md-primary);
+}
+input[type="range"]::-webkit-slider-thumb{
+  -webkit-appearance:none; width:14px; height:14px; border-radius:50%;
+  background: var(--md-primary); border:none;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--md-primary) 22%, transparent);
+}
+input[type="range"]::-moz-range-thumb{
+  width:14px; height:14px; border-radius:50%;
+  background: var(--md-primary); border:none;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--md-primary) 22%, transparent);
+}
 
-.scheme-swatches{ display:flex; flex-wrap:wrap; gap:10px; margin-bottom:10px; }
+.scheme-swatches{ display:flex; flex-wrap:wrap; gap:10px; margin:0 0 2px; }
 .scheme-swatch{
-  width:30px; height:30px; border-radius:50%; cursor:pointer;
-  border:2px solid transparent; padding:0;
-  transition: border-color .15s ease, transform .15s ease;
+  position:relative; width:44px; height:44px; border-radius:14px; cursor:pointer;
+  border:2px solid transparent; padding:0; background: var(--md-surface-container-highest);
+  display:flex; align-items:center; justify-content:center;
+  transition: transform .15s ease, border-color .15s ease;
+}
+.scheme-swatch::before{
+  content:''; display:block; width:30px; height:30px; border-radius:50%;
+  background: var(--swatch, var(--md-primary));
 }
 .scheme-swatch:hover{ transform:scale(1.08); }
 .scheme-swatch.is-active{ border-color: var(--md-on-surface); }
@@ -710,6 +749,15 @@ input[type="range"]{ width:100%; accent-color: var(--md-primary); }
 .about-site:hover{ text-decoration:underline; }
 .about-github{ color:var(--md-on-surface); opacity:.85; display:flex; padding:8px; border-radius:var(--shape-full); transition:background .15s ease; }
 .about-github:hover{ background:var(--md-surface-container-highest); opacity:1; }
+
+/* About panel → Version section: running version, update status line,
+   and the manual check button. */
+.about-update-row{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+.about-version{ font-size:13.5px; font-weight:600; font-variant-numeric: tabular-nums; }
+.about-update-status{ font-size:12.5px; color: var(--md-on-surface-variant); flex:1; min-width:0; }
+.about-update-status.is-ok{ color:#43a047; }
+.about-update-status.is-outdated{ color: var(--md-primary); font-weight:500; }
+.about-update-status.is-error{ color: var(--md-error); }
 
 ::-webkit-scrollbar{ width:10px; height:10px; }
 ::-webkit-scrollbar-thumb{ background: var(--md-surface-container-highest); border-radius: var(--shape-full); }

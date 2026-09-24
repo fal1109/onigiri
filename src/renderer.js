@@ -58,8 +58,9 @@ let currentVideoUrl = null;
 let currentItemId = null; // id of the queue item ACTUALLY loaded in the player right now
 let lastKnownSyncedTime = 0; // last room-authoritative time, used to snap back unauthorized seeks
 const downloadingUrls = new Set(); // multiple downloads can overlap now that queueing stays live
-let foregroundUrl = null; // download currently driving the progress bar / player
+let foregroundUrl = null; // download currently driving the player
 let downloadError = null; // { itemId, url, message } — local to this client only
+const progressByUrl = new Map(); // url -> latest percent from yt-dlp
 const predownloadedPaths = new Map(); // url -> local file path, ready to use instantly
 const predownloadingUrls = new Set();
 let roomQueue = [];
@@ -95,6 +96,7 @@ const hasControlPermission = () => amIHost || djUsernames.includes(username);
   wireNetworkEvents();
   wireHealthCheck();
   wireAboutLinks();
+  wireAboutVersion();
   refreshConfigNotice();
 
   // Probe the download stack quietly; only surface the checklist when
@@ -238,6 +240,11 @@ const PRESET_THEMES = {
   miku: '#37C0D1'
 };
 
+const PRESET_NAMES = {
+  asuka: 'Asuka', lilith: 'Lilith', sartre: 'Sartre', fouco: 'Fouco',
+  kallen: 'Kallen', green: 'Green', morphean: 'Morphean Paradox', miku: 'Miku'
+};
+
 // config.customTheme is either: null (no theme, pure CSS defaults), a seed
 // hex string (a preset — regenerated per current dark/light mode), or a
 // full {--token: value} object (an imported theme JSON, fixed regardless
@@ -298,8 +305,47 @@ function refreshAppearanceButtons() {
   });
 }
 
+// The palette swatches are generated: each one is a four-tone Material
+// palette circle (primary / primary-container / tertiary / on-primary-container)
+// computed from that preset's seed through the same token generator the live
+// theme uses — so the swatch always previews what picking it produces.
+function renderSchemeSwatches() {
+  const wrap = $('#scheme-swatches');
+  wrap.innerHTML = '';
+  for (const [name, seed] of Object.entries(PRESET_THEMES)) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'scheme-swatch';
+    btn.dataset.preset = name;
+    btn.title = PRESET_NAMES[name] || name;
+    btn.setAttribute('role', 'radio');
+    btn.setAttribute('aria-label', PRESET_NAMES[name] || name);
+    wrap.appendChild(btn);
+  }
+  paintSchemeSwatches();
+}
+
+function paintSchemeSwatches() {
+  const mode = config.themeMode === 'light' ? 'light' : 'dark';
+  $('#scheme-swatches').querySelectorAll('.scheme-swatch').forEach((btn) => {
+    const t = buildThemeTokens(PRESET_THEMES[btn.dataset.preset], mode);
+    // conic runs clockwise from 12 o'clock: top-right, bottom-right,
+    // bottom-left, top-left — matching the reference palette circles.
+    btn.style.setProperty('--swatch',
+      `conic-gradient(${t['--md-primary-container']} 0 25%, ${t['--md-primary']} 0 50%, ${t['--md-tertiary']} 0 75%, ${t['--md-on-primary-container']} 0)`);
+  });
+}
+
+// Keeps a range input's CSS --fill-pct in sync with its value so the styled
+// track shows the filled portion. Top-level: used by both wireAppearance and
+// openSettings.
+function syncRangeFill(el) {
+  el.style.setProperty('--fill-pct', `${((el.value - el.min) / (el.max - el.min)) * 100}%`);
+}
+
 function wireAppearance() {
   document.addEventListener('mousemove', handleParallaxMouseMove);
+  renderSchemeSwatches();
 
   $('#settings-nav').addEventListener('click', (e) => {
     const btn = e.target.closest('.settings-nav-item');
@@ -313,6 +359,7 @@ function wireAppearance() {
     if (!btn) return;
     config = await window.onigiri.setConfig({ themeMode: btn.dataset.themeValue });
     applyAppearance();
+    paintSchemeSwatches(); // palette circles shift with dark/light mode
     refreshAppearanceButtons();
   });
 
@@ -341,6 +388,7 @@ function wireAppearance() {
   });
 
   $('#setting-blur-amount').addEventListener('input', (e) => {
+    syncRangeFill(e.target);
     $('#blur-amount-label').textContent = `${e.target.value}px`;
     $('#setup-bg').style.filter = `blur(${e.target.value}px)`;
   });
@@ -589,12 +637,20 @@ function wireRoom() {
   });
 
   window.onigiri.onVideoProgress(({ percent, url }) => {
-    // Only show progress for the download the user is actually waiting on —
-    // with queue-while-downloading, background prefetches run concurrently.
-    if (url && foregroundUrl && url !== foregroundUrl) return;
-    $('#progress-row').hidden = false;
-    $('#progress-fill').style.width = `${percent}%`;
-    $('#progress-label').textContent = `${Math.round(percent)}%`;
+    if (!url) return;
+    progressByUrl.set(url, percent);
+    // Update this video's own bar in place if it's rendered; otherwise
+    // (re)render the list so a just-started download grows its bar.
+    for (const el of document.querySelectorAll('.queue-item-progress')) {
+      if (el.dataset.url === url) {
+        el.querySelector('.queue-item-progress-fill').style.width = `${percent}%`;
+        // Keep the item's live percent label in step with its bar.
+        const badge = el.closest('.queue-item')?.querySelector('.queue-item-badge');
+        if (badge?.dataset.downloadLabel) badge.textContent = `${badge.dataset.downloadLabel} ${Math.round(percent)}%`;
+        return;
+      }
+    }
+    if (downloadingUrls.has(url)) renderQueueList();
   });
 
   function updateEmptyState() {
@@ -617,6 +673,11 @@ function renderQueueList() {
   }
   empty.hidden = true;
 
+  // Preserve each in-flight bar's live DOM element across re-renders so the
+  // CSS width transition runs smoothly instead of restarting on every update.
+  const liveBars = new Map();
+  for (const el of list.querySelectorAll('.queue-item-progress')) liveBars.set(el.dataset.url, el);
+
   roomQueue.forEach((item, idx) => {
     const row = document.createElement('div');
     const failed = downloadError && downloadError.itemId === item.id;
@@ -633,14 +694,31 @@ function renderQueueList() {
 
     const badge = document.createElement('span');
     badge.className = 'queue-item-badge';
-    if (downloadingUrls.has(item.url)) badge.textContent = 'Downloading…';
+    if (downloadingUrls.has(item.url)) {
+      badge.dataset.downloadLabel = 'Downloading —';
+      badge.textContent = `${badge.dataset.downloadLabel} ${Math.round(progressByUrl.get(item.url) ?? 0)}%`;
+    }
     else if (failed) badge.textContent = 'Failed — download only failed for you';
-    else if (predownloadingUrls.has(item.url)) badge.textContent = 'Pre-loading…';
+    else if (predownloadingUrls.has(item.url)) {
+      badge.dataset.downloadLabel = 'Pre-loading —';
+      badge.textContent = `${badge.dataset.downloadLabel} ${Math.round(progressByUrl.get(item.url) ?? 0)}%`;
+    }
     else if (idx === roomQueueIndex) badge.textContent = 'Now playing';
     else if (predownloadedPaths.has(item.url)) badge.textContent = 'Ready';
 
     const actions = document.createElement('div');
     actions.className = 'queue-item-actions';
+
+    // Every item gets its own progress bar — shown while downloading,
+    // hidden otherwise (retry sits to its right when failed).
+    if (downloadingUrls.has(item.url) || predownloadingUrls.has(item.url)) {
+      const bar = liveBars.get(item.url) || document.createElement('div');
+      bar.className = 'queue-item-progress';
+      bar.dataset.url = item.url;
+      bar.innerHTML = '<div class="queue-item-progress-track"><div class="queue-item-progress-fill"></div></div>';
+      bar.querySelector('.queue-item-progress-fill').style.width = `${progressByUrl.get(item.url) ?? 0}%`;
+      actions.appendChild(bar);
+    }
 
     if (failed) {
       const retryBtn = document.createElement('button');
@@ -702,6 +780,7 @@ async function predownloadNext() {
   if (!nextItem) return;
   if (predownloadedPaths.has(nextItem.url) || predownloadingUrls.has(nextItem.url) || downloadingUrls.has(nextItem.url)) return;
   predownloadingUrls.add(nextItem.url);
+  progressByUrl.set(nextItem.url, 0);
   renderQueueList();
   try {
     const { filePath } = await window.onigiri.downloadVideo(nextItem.url);
@@ -731,12 +810,8 @@ async function loadVideo(url, itemId) {
   downloadingUrls.add(url);
   foregroundUrl = url;
   downloadError = null;
+  progressByUrl.set(url, 0);
   renderQueueList();
-  // Queueing must stay available while something downloads — being unable to
-  // add the NEXT video until this one finished made the queue unusable.
-  $('#progress-row').hidden = false;
-  $('#progress-fill').style.width = '0%';
-  $('#progress-label').textContent = '0%';
   toast('Downloading video…');
   try {
     const { filePath } = await window.onigiri.downloadVideo(url);
@@ -771,10 +846,7 @@ async function loadVideo(url, itemId) {
   } finally {
     downloadingUrls.delete(url);
     renderQueueList();
-    if (url === foregroundUrl) {
-      foregroundUrl = null;
-      setTimeout(() => { $('#progress-row').hidden = true; }, 1200);
-    }
+    if (url === foregroundUrl) foregroundUrl = null;
   }
 }
 
@@ -1317,6 +1389,7 @@ async function openSettings() {
   customEmotes = await window.onigiri.getEmotes();
   $('#setting-background-url').value = config.backgroundUrl;
   $('#setting-blur-amount').value = config.backgroundBlur ?? 24;
+  syncRangeFill($('#setting-blur-amount'));
   $('#blur-amount-label').textContent = `${config.backgroundBlur ?? 24}px`;
   $('#setting-parallax').checked = config.backgroundParallax !== false;
   refreshAppearanceButtons();
@@ -1484,6 +1557,45 @@ function wireAboutLinks() {
   }
   // Easter-egg anchor — wired and currently a no-op, fill it in later.
   $('#about-tagline').addEventListener('click', () => { /* reserved */ });
+}
+
+// --- About panel: version number + update check against GitHub releases ----
+// The tag on the latest published release is compared against the running
+// app's version (package.json → app.getVersion() in main.js).
+function wireAboutVersion() {
+  const status = $('#update-status');
+  const setStatus = (text, cls = '', link = null) => {
+    status.textContent = text;
+    status.className = ('about-update-status ' + cls).trim();
+    status.querySelectorAll('button').forEach((b) => b.remove());
+    if (link) {
+      const a = document.createElement('button');
+      a.type = 'button';
+      a.className = 'link-btn';
+      a.textContent = link.text;
+      a.addEventListener('click', () => window.onigiri.openExternal(link.url));
+      status.appendChild(document.createTextNode(' '));
+      status.appendChild(a);
+    }
+  };
+
+  const check = async () => {
+    setStatus('Checking for updates…');
+    try {
+      const res = await window.onigiri.checkForUpdates();
+      if (!res.ok) return setStatus(`Couldn't check for updates — ${res.error}`, 'is-error');
+      if (res.updateAvailable) return setStatus(`New version available: v${res.latest}`, 'is-outdated', { text: 'See release', url: res.releaseUrl });
+      if (!res.latest) return setStatus(res.message || 'No published releases yet', '');
+      setStatus("You're on the latest version", 'is-ok');
+    } catch (err) {
+      setStatus(`Couldn't check for updates — ${err.message}`, 'is-error');
+    }
+  };
+
+  window.onigiri.getAppVersion().then((v) => { $('#app-version').textContent = `v${v}`; });
+  $('#check-updates-btn').addEventListener('click', check);
+  // Also check automatically whenever the About tab is opened.
+  document.querySelector('.settings-nav-item[data-panel="about"]').addEventListener('click', check);
 }
 
 // ---------------------------------------------------------------------------

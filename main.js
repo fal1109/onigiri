@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -639,9 +639,9 @@ function probePlugins() {
       resolve({
         ok: found.length === 2,
         found,
-        detail: found.length === 2 ? 'animepahe + hianime loaded'
-          : found.length === 1 ? `only ${found.join(', ')} loaded`
-          : 'anime plugins not installed',
+        detail: found.length === 2 ? `Plugin supported — ${found.join(', ')}`
+          : found.length === 1 ? `Plugin supported — only ${found.join(', ')} loaded`
+          : 'No plugins installed',
       });
     });
   });
@@ -806,8 +806,8 @@ ipcMain.handle('health:check', async () => {
       { id: 'ytdlp', label: 'yt-dlp', ok: ytdlpInfo.ok, detail: ytdlpInfo.detail, fix: ytdlpInfo.ok ? null : 'Install yt-dlp (see README) — the setup.exe / AppImage bundles it automatically.' },
       { id: 'ffmpeg', label: 'ffmpeg', ok: ffmpegOk, detail: ffmpegInfo.detail, fix: ffmpegOk ? null : 'Install ffmpeg — needed to merge video/audio streams into one file.' },
       { id: 'impersonate', label: 'Browser impersonation (Cloudflare bypass)', ok: impersonation.ok, detail: impersonation.detail, fix: impersonation.ok ? null : 'Use the official yt-dlp binary, or pip install curl_cffi.' },
-      { id: 'plugins', label: 'Anime site plugins (animepahe / hianime)', ok: plugins.ok, detail: plugins.detail, fix: plugins.ok ? null : 'Run the plugin install commands in the README (requirement #3).' },
-      { id: 'cookies', label: 'Browser cookies (animepahe session)', ok: cookies.ok, detail: cookies.detail, fix: cookies.ok ? null : 'Settings → Downloads → set your cookie browser (e.g. brave, chrome). Visit animepahe once in that browser first so it earns the Cloudflare clearance.' },
+      { id: 'plugins', label: 'Site plugins', ok: plugins.ok, detail: plugins.detail, fix: plugins.ok ? null : 'Run the setup script in the otaku folder of the repository.' },
+      { id: 'cookies', label: 'Browser cookies', ok: cookies.ok, detail: cookies.detail, fix: cookies.ok ? null : 'Settings → Downloads → set your cookie browser (e.g. brave, chrome). Visit the site once in that browser first so it earns the Cloudflare clearance.' },
     ],
     allOk: ytdlpInfo.ok && ffmpegOk && impersonation.ok && plugins.ok && cookies.ok,
   };
@@ -960,6 +960,50 @@ ipcMain.handle('chat:typing-stop', (_e, { username }) => { sendTypingStop(userna
 ipcMain.handle('sync:request', () => {
   requestSync();
   return { ok: true };
+});
+
+// --- App version + update check against GitHub releases -------------------
+// Compares the running version (package.json) with the latest published
+// release tag. Versions are compared numerically per segment, so "1.4" vs
+// "1.10" and a tag written without the leading "v" both behave correctly.
+function parseVersion(v) {
+  return String(v).replace(/^v/i, '').split(/[.+-]/).map((n) => parseInt(n, 10) || 0);
+}
+
+function isNewerVersion(candidate, current) {
+  const a = parseVersion(candidate), b = parseVersion(current);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0);
+  }
+  return false;
+}
+
+ipcMain.handle('app:version', () => app.getVersion());
+
+ipcMain.handle('app:check-updates', async () => {
+  const repo = 'fal1109/onigiri';
+  try {
+    const res = await net.fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
+      headers: { 'User-Agent': 'onigiri-app', 'Accept': 'application/vnd.github+json' },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.status === 404) {
+      return { ok: true, latest: null, message: 'No published releases yet — cut one from the GitHub Releases page.' };
+    }
+    if (!res.ok) return { ok: false, error: `GitHub returned ${res.status}` };
+    const rel = await res.json();
+    const current = app.getVersion();
+    const latest = String(rel.tag_name || '').replace(/^v/i, '');
+    return {
+      ok: true,
+      current,
+      latest,
+      updateAvailable: isNewerVersion(latest, current),
+      releaseUrl: rel.html_url,
+    };
+  } catch (err) {
+    return { ok: false, error: err.name === 'TimeoutError' ? 'timed out' : err.message };
+  }
 });
 
 ipcMain.handle('shell:open-path', (_e, target) => {

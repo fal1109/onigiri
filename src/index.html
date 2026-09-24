@@ -205,12 +205,6 @@
                 Queue <span id="queue-count" class="queue-count-badge">0</span>
               </button>
             </div>
-            <div id="progress-row" class="progress-row" hidden>
-              <div class="progress-track">
-                <div id="progress-fill" class="progress-fill"></div>
-              </div>
-              <span id="progress-label">0%</span>
-            </div>
             <div id="queue-panel" class="queue-panel" hidden>
               <div id="queue-list" class="queue-list"></div>
               <p id="queue-empty" class="queue-empty">Nothing queued yet — add a link above.</p>
@@ -240,67 +234,53 @@
           <div class="settings-panels">
 
             <div class="settings-panel" data-panel="appearance">
-              <label class="field">
+              <div class="field">
+                <span>Color</span>
+                <div class="scheme-swatches" id="scheme-swatches" role="radiogroup" aria-label="Color theme"></div>
+              </div>
+
+              <div class="field">
                 <span>Theme</span>
-                <div class="segmented" id="theme-toggle">
-                  <button type="button" data-theme-value="dark">Dark</button>
-                  <button type="button" data-theme-value="light">Light</button>
-                </div>
-              </label>
-
-              <label class="field">
-                <span>Color theme</span>
-                <div class="scheme-swatches" id="scheme-swatches">
-                  <button type="button" class="scheme-swatch" data-preset="asuka" title="Asuka"
-                    style="background:#B3401F"></button>
-                  <button type="button" class="scheme-swatch" data-preset="lilith" title="Lilith"
-                    style="background:#873E47"></button>
-                  <button type="button" class="scheme-swatch" data-preset="sartre" title="Sartre"
-                    style="background:#FFEC65"></button>
-                  <button type="button" class="scheme-swatch" data-preset="fouco" title="Fouco"
-                    style="background:#83FCFF"></button>
-                  <button type="button" class="scheme-swatch" data-preset="kallen" title="Kallen"
-                    style="background:#F99FE3"></button>
-                  <button type="button" class="scheme-swatch" data-preset="green" title="Green"
-                    style="background:#AEFA87"></button>
-                  <button type="button" class="scheme-swatch" data-preset="morphean" title="Morphean Paradox"
-                    style="background:#465189"></button>
-                  <button type="button" class="scheme-swatch" data-preset="miku" title="Miku"
-                    style="background:#37C0D1"></button>
-                </div>
                 <div class="field-row">
+                  <div class="segmented" id="theme-toggle">
+                    <button type="button" data-theme-value="dark">Dark</button>
+                    <button type="button" data-theme-value="light">Light</button>
+                  </div>
                   <button type="button" id="import-theme-btn" class="btn btn-outlined btn-small">Import JSON…</button>
-                  <button type="button" id="reset-theme-btn" class="btn btn-text btn-small">Reset to default</button>
+                  <button type="button" id="reset-theme-btn" class="btn btn-text btn-small">Reset</button>
                 </div>
-                <span class="field-hint">Or bring your own — a flat JSON file of hex colors, e.g.
-                  <code>{"--md-primary": "#B3401F"}</code>.</span>
-              </label>
+              </div>
 
+              <h3 class="panel-subheading">Background</h3>
               <label class="field">
-                <span>Background image URL</span>
+                <span>Image URL</span>
                 <input type="text" id="setting-background-url"
-                  placeholder="https://link-to-image (leave blank for none)">
+                  placeholder="https://link-to-image — leave blank for none">
               </label>
 
               <label class="field">
-                <span>Background blur — <span id="blur-amount-label">24px</span></span>
+                <span>Blur — <span id="blur-amount-label">24px</span></span>
                 <input type="range" id="setting-blur-amount" min="0" max="50" value="24">
-              </label>
-
-              <label class="field field-checkbox">
-                <input type="checkbox" id="setting-parallax">
-                <span>Cursor-based parallax on the background</span>
               </label>
 
               <div class="field">
                 <div class="switch-row">
-                  <span id="bg-switch-label">Show background image</span>
+                  <span id="bg-switch-label">Show image</span>
                   <label class="md-switch">
                     <input type="checkbox" id="setting-bg-enabled" role="switch">
                     <span class="md-switch-track"><span class="md-switch-thumb"></span></span>
                   </label>
                 </div>
-                <span class="field-hint">Turn the image off without losing the URL — flip it back on anytime.</span>
+              </div>
+
+              <div class="field">
+                <div class="switch-row">
+                  <span>Cursor parallax</span>
+                  <label class="md-switch">
+                    <input type="checkbox" id="setting-parallax" role="switch">
+                    <span class="md-switch-track"><span class="md-switch-thumb"></span></span>
+                  </label>
+                </div>
               </div>
             </div>
 
@@ -308,7 +288,6 @@
               <label class="field">
                 <span>Avatar image URL</span>
                 <input type="text" id="setting-avatar-url" placeholder="https://link-to-image">
-                <span class="field-hint">Shown next to your name in the participants list.</span>
               </label>
             </div>
 
@@ -329,12 +308,11 @@
                   <button type="button" data-quality-value="1080">1080p</button>
                   <button type="button" data-quality-value="best">Best</button>
                 </div>
-                <span class="field-hint">Caps the resolution, falling back to the best stream below it. “Best” takes whatever is highest.</span>
               </label>
               <label class="field">
-                <span>Cookie browser <span style="opacity:.6">(certain sites need this)</span></span>
+                <span>Cookie browser</span>
                 <input type="text" id="setting-cookie-browser" placeholder="brave — or brave+gnomekeyring on Linux">
-                <span class="field-hint">Name the browser you're logged in with (visit the site once in it first). Firefox forks (Floorp, Zen, LibreWolf…): use <code>firefox:/full/path/to/profile</code>. Leave blank if you don't need it.</span>
+                <span class="field-hint">Visit the site once in this browser first. Firefox forks: <code>firefox:/path/to/profile</code>.</span>
               </label>
               <div class="field-row">
                 <button type="button" id="run-setup-check-btn" class="btn btn-outlined btn-small">Run setup check</button>
@@ -345,7 +323,6 @@
               <label class="field">
                 <span>Discord webhook URL</span>
                 <input type="text" id="setting-webhook" placeholder="https://discord.com/api/webhooks/…">
-                <span class="field-hint">Room chat gets posted here (host only).</span>
               </label>
 
               <h3 class="panel-subheading">Rich Presence</h3>
@@ -376,7 +353,6 @@
                   </label>
                 </div>
               </div>
-              <span class="field-hint">Needs Discord running on this machine. Server-side developers must also put a Rich Presence application ID in main.js.</span>
             </div>
 
             <div class="settings-panel" data-panel="connection" hidden>
@@ -388,7 +364,6 @@
               <label class="field">
                 <span>Supabase anon public key</span>
                 <input type="text" id="setting-supabase-key" placeholder="eyJhbGciOi…">
-                <span class="field-hint">See README for setup.</span>
               </label>
             </div>
 
@@ -401,7 +376,7 @@
                   <button type="button" id="add-custom-emoji-btn" class="btn btn-outlined btn-small">Add</button>
                 </div>
                 <span class="field-hint">
-                  Ctrl+E in chat to use one. Also editable by hand — <code id="emotes-file-path">…</code>
+                  Ctrl+E in chat to use. Emote file: <code id="emotes-file-path">…</code>
                   <button type="button" id="reload-emotes-btn" class="link-btn">reload</button>
                 </span>
               </label>
@@ -421,6 +396,15 @@
                     <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/>
                   </svg>
                 </a>
+              </div>
+
+              <h3 class="panel-subheading">Version</h3>
+              <div class="field">
+                <div class="about-update-row">
+                  <span id="app-version" class="about-version">v—</span>
+                  <span id="update-status" class="about-update-status" aria-live="polite"></span>
+                  <button type="button" id="check-updates-btn" class="btn btn-outlined btn-small">Check for updates</button>
+                </div>
               </div>
             </div>
 

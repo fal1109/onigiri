@@ -4,6 +4,8 @@ contextBridge.exposeInMainWorld('onigiri', {
   // config
   getConfig: () => ipcRenderer.invoke('config:get'),
   setConfig: (partial) => ipcRenderer.invoke('config:set', partial),
+  getAppVersion: () => ipcRenderer.invoke('app:version'),
+  checkForUpdates: () => ipcRenderer.invoke('app:check-updates'),
   chooseDownloadDir: () => ipcRenderer.invoke('dialog:choose-dir'),
   healthCheck: () => ipcRenderer.invoke('health:check'),
   importTheme: () => ipcRenderer.invoke('theme:import'),
