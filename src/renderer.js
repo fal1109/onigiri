@@ -63,6 +63,12 @@ let downloadError = null; // { itemId, url, message } — local to this client o
 const progressByUrl = new Map(); // url -> latest percent from yt-dlp
 const predownloadedPaths = new Map(); // url -> local file path, ready to use instantly
 const predownloadingUrls = new Set();
+const failedPrefetchUrls = new Set(); // urls that already failed a background prefetch — skipped, not retried in a loop
+// Host's pre-room playlist (setup screen). Order is the queue order — first
+// link added becomes the first thing everyone watches.
+const playlistEntries = [];
+let activeUploadPath = null; // file currently uploading to litterbox
+let isCurrentItemLocal = false; // player is showing a user-picked local file instead of the download
 let roomQueue = [];
 let roomQueueIndex = -1;
 let typingUsers = new Set();
@@ -89,6 +95,7 @@ const hasControlPermission = () => amIHost || djUsernames.includes(username);
   applyAppearance();
   buildEmojiTray();
   wireSetup();
+  wirePlaylistBuilder();
   wireRoom();
   wireChat();
   wireSettings();
@@ -433,7 +440,10 @@ function wireSetup() {
     const submitBtn = e.target.querySelector('button[type="submit"]');
     submitBtn.disabled = true;
     await window.onigiri.setConfig({ username });
-    const res = await window.onigiri.hostRoom(username);
+    // Playlist order is preserved end-to-end: entries were appended as the
+    // host typed them, and the main process seeds the queue top-to-bottom.
+    const playlistUrls = playlistEntries.map((entry) => entry.url);
+    const res = await window.onigiri.hostRoom(username, playlistUrls);
     submitBtn.disabled = false;
     if (!res.ok) { toast(`Couldn't create room: ${res.error}`); return; }
     role = 'host';
@@ -457,6 +467,54 @@ function wireSetup() {
     enterRoom();
     setRoomChip(`In room: ${code}`, code);
     await window.onigiri.requestSync();
+  });
+}
+
+// ------------------------------------------------- host playlist builder
+// Rows stay in the exact order they were added (plain array + append-only
+// DOM), because that order becomes the joiners' download/watch queue.
+function renderPlaylistRows() {
+  const wrap = $('#playlist-rows');
+  wrap.innerHTML = '';
+  playlistEntries.forEach((entry, idx) => {
+    const row = document.createElement('div');
+    row.className = 'playlist-row';
+    const order = document.createElement('span');
+    order.className = 'playlist-row-order';
+    order.textContent = `${idx + 1}.`;
+    const text = document.createElement('span');
+    text.className = 'playlist-row-url';
+    text.textContent = entry.name || entry.url;
+    text.title = entry.url;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'playlist-row-remove';
+    remove.title = 'Remove from playlist';
+    remove.setAttribute('aria-label', `Remove ${entry.name || 'item'} from playlist`);
+    remove.textContent = '×';
+    remove.addEventListener('click', () => {
+      playlistEntries.splice(idx, 1);
+      renderPlaylistRows();
+    });
+    row.appendChild(order);
+    row.appendChild(text);
+    row.appendChild(remove);
+    wrap.appendChild(row);
+  });
+}
+
+function wirePlaylistBuilder() {
+  $('#playlist-add-btn').addEventListener('click', () => {
+    const input = $('#playlist-url-input');
+    const url = input.value.trim();
+    if (!url) return;
+    playlistEntries.push({ url, name: null });
+    input.value = '';
+    renderPlaylistRows();
+    input.focus();
+  });
+  $('#playlist-url-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); $('#playlist-add-btn').click(); }
   });
 }
 
@@ -503,7 +561,13 @@ async function leaveRoom() {
   lastParticipants = [];
   predownloadedPaths.clear();
   predownloadingUrls.clear();
+  failedPrefetchUrls.clear();
   $('#top-participants').innerHTML = '';
+  playlistEntries.length = 0;
+  renderPlaylistRows();
+  activeUploadPath = null;
+  isCurrentItemLocal = false;
+  $('#upload-video-btn').disabled = false;
 
   const video = $('#player');
   video.pause();
@@ -624,6 +688,62 @@ function wireRoom() {
     if (e.key === 'Enter') { e.preventDefault(); $('#add-queue-btn').click(); }
   });
 
+  // Upload → litterbox (12h expiry, 6-char anonymous name, 1 GiB cap).
+  $('#upload-video-btn').addEventListener('click', async () => {
+    if (activeUploadPath) { toast('Already uploading a video — hang on.'); return; }
+    const filePath = await window.onigiri.chooseLocalVideo();
+    if (!filePath) return;
+    activeUploadPath = filePath;
+    $('#upload-video-btn').disabled = true;
+    toast('Uploading to litterbox (expires in 12h)…');
+    try {
+      const url = await window.onigiri.uploadVideo(filePath);
+      // There's no point downloading what we just uploaded: register the
+      // local file as "already on disk" BEFORE the link enters the queue, so
+      // the load pipeline plays it instantly from disk instead of fetching
+      // the litterbox link. Everyone else (and future joiners) downloads it
+      // through the queue as usual.
+      predownloadedPaths.set(url, filePath);
+      await window.onigiri.queueAdd(url);
+
+      // Give the queue-update echo a beat to land, then decide how to show it.
+      await new Promise((r) => setTimeout(r, 250));
+      if (roomQueue[roomQueueIndex]?.url === url) {
+        // The upload became the room's current video — the pipeline already
+        // put our local copy on screen, and room sync applies as usual.
+        toast('Upload complete — playing from your copy');
+      } else {
+        // The room is watching something else: open the upload locally for
+        // this viewer without touching the room's playback. Detached from
+        // sync (currentItemId = null) so remote play/pause/seek events for
+        // the room's video can't hijack the preview; when the queue reaches
+        // the link later, it plays from this same local copy and rejoins.
+        setLocalVideo(filePath);
+        currentItemId = null;
+        noteWatchStart(null);
+        $('#player').play().catch(() => {});
+        toast('Upload complete — link added to the queue');
+      }
+    } catch (err) {
+      toast(`Upload failed: ${err.message}`);
+    } finally {
+      activeUploadPath = null;
+      $('#upload-video-btn').disabled = false;
+    }
+  });
+
+  let lastUploadPercentShown = -1;
+  window.onigiri.onUploadProgress(({ filePath, percent }) => {
+    if (filePath !== activeUploadPath) return;
+    // Toasts are re-created on every call — only refresh when the rounded
+    // percent actually changes, not on every 64 KiB chunk.
+    const rounded = Math.round(percent);
+    if (rounded !== lastUploadPercentShown && percent < 99) {
+      lastUploadPercentShown = rounded;
+      toast(`Uploading… ${rounded}%`);
+    }
+  });
+
   $('#skip-btn').addEventListener('click', () => {
     if (!hasControlPermission()) { toast("Only the host or a DJ can skip"); return; }
     window.onigiri.queueNext();
@@ -709,9 +829,24 @@ function renderQueueList() {
     const actions = document.createElement('div');
     actions.className = 'queue-item-actions';
 
+    const isDownloading = downloadingUrls.has(item.url) || predownloadingUrls.has(item.url);
+
+    // While a download runs, the user can bail out of it by picking a file
+    // they already have — open-file icon sits to the left of the percentage
+    // bar, per the v1.5 spec. Also offered while the download is merely
+    // failed (nothing in flight to cancel, but the swap still makes sense).
+    if (isDownloading || failed) {
+      const localBtn = document.createElement('button');
+      localBtn.type = 'button';
+      localBtn.title = 'Use a video already on this device instead';
+      localBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2Z"/></svg>';
+      localBtn.addEventListener('click', () => playLocalInstead(item));
+      actions.appendChild(localBtn);
+    }
+
     // Every item gets its own progress bar — shown while downloading,
     // hidden otherwise (retry sits to its right when failed).
-    if (downloadingUrls.has(item.url) || predownloadingUrls.has(item.url)) {
+    if (isDownloading) {
       const bar = liveBars.get(item.url) || document.createElement('div');
       bar.className = 'queue-item-progress';
       bar.dataset.url = item.url;
@@ -739,6 +874,22 @@ function renderQueueList() {
       actions.appendChild(playBtn);
     }
 
+    // Copy the source link so the video can be grabbed with an external
+    // downloader or archived — works for every item in the queue.
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.title = 'Copy video link';
+    copyBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1Zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2Zm0 16H8V7h11v14Z"/></svg>';
+    copyBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(item.url);
+        toast('Link copied');
+      } catch {
+        toast(item.url); // clipboard blocked — at least show it
+      }
+    });
+    actions.appendChild(copyBtn);
+
     const removeBtn = document.createElement('button');
     removeBtn.type = 'button';
     removeBtn.title = 'Remove';
@@ -754,11 +905,6 @@ function renderQueueList() {
   });
 }
 
-// Downloads whichever queue item is now "current" if it's not already the
-// loaded video, then resolves once that's settled — callers can chain a
-// seek/play-state application after it (see onSync below). Also kicks off a
-// silent background download of whatever's next, so skipping/advancing is
-// instant instead of waiting on a fresh download.
 async function applyQueueState(queue, queueIndex) {
   roomQueue = Array.isArray(queue) ? queue : [];
   roomQueueIndex = typeof queueIndex === 'number' ? queueIndex : -1;
@@ -775,10 +921,26 @@ async function applyQueueState(queue, queueIndex) {
   predownloadNext();
 }
 
+let prefetchChainActive = false;
+
 async function predownloadNext() {
-  const nextItem = roomQueue[roomQueueIndex + 1];
+  // Playlist mode: work through the queue ahead of the playhead one video at
+  // a time, so everything is (nearly) local before its turn comes up. Links
+  // that already failed a prefetch are remembered and skipped rather than
+  // retried forever — if one becomes current, loadVideo surfaces the real
+  // error through the normal foreground path. The chain flag keeps the many
+  // queue-update triggers from stacking parallel downloads.
+  if (prefetchChainActive) return;
+  const start = Math.max(roomQueueIndex + 1, 0);
+  let nextItem = null;
+  for (let i = start; i < roomQueue.length; i++) {
+    const it = roomQueue[i];
+    if (predownloadedPaths.has(it.url) || predownloadingUrls.has(it.url) || downloadingUrls.has(it.url) || failedPrefetchUrls.has(it.url)) continue;
+    nextItem = it;
+    break;
+  }
   if (!nextItem) return;
-  if (predownloadedPaths.has(nextItem.url) || predownloadingUrls.has(nextItem.url) || downloadingUrls.has(nextItem.url)) return;
+  prefetchChainActive = true;
   predownloadingUrls.add(nextItem.url);
   progressByUrl.set(nextItem.url, 0);
   renderQueueList();
@@ -786,11 +948,13 @@ async function predownloadNext() {
     const { filePath } = await window.onigiri.downloadVideo(nextItem.url);
     predownloadedPaths.set(nextItem.url, filePath);
   } catch {
-    // Silent — if it's still broken once it actually becomes current,
-    // the normal foreground download path surfaces the real error there.
+    failedPrefetchUrls.add(nextItem.url);
   } finally {
     predownloadingUrls.delete(nextItem.url);
+    prefetchChainActive = false;
     renderQueueList();
+    // The timeout re-reads the (possibly edited) queue before continuing.
+    setTimeout(() => { if (roomQueue.length) predownloadNext(); }, 250);
   }
 }
 
@@ -802,6 +966,7 @@ async function loadVideo(url, itemId) {
     downloadError = null;
     setLocalVideo(cached);
     currentItemId = itemId; // only set once the video is ACTUALLY loaded — see wireRoom's player listeners
+    noteWatchStart(roomQueue.find((q) => q.id === itemId));
     toast('Video ready');
     renderQueueList();
     return;
@@ -824,6 +989,7 @@ async function loadVideo(url, itemId) {
     predownloadedPaths.set(url, filePath);
     setLocalVideo(filePath);
     currentItemId = itemId;
+    noteWatchStart(roomQueue.find((q) => q.id === itemId));
     toast('Video ready');
   } catch (err) {
     if (url !== foregroundUrl) {
@@ -850,6 +1016,40 @@ async function loadVideo(url, itemId) {
   }
 }
 
+// Swap a queue item's video for one already on this device: cancels the
+// running/partial download (deleting its .part file), then plays the local
+// file for THIS viewer only — everyone else keeps syncing off the queue item.
+async function playLocalInstead(item) {
+  let filePath;
+  try {
+    filePath = await window.onigiri.chooseLocalVideo();
+  } catch (err) {
+    toast(err.message || "Couldn't open the file picker.");
+    return;
+  }
+  if (!filePath) return;
+
+  // Roommates are still waiting on the download — the source URL stays
+  // broadcast as-is; we just detach this client's player from it. For the
+  // current item, currentVideoUrl keeps pointing at the queue URL, so a
+  // redundant queue-update for it won't re-trigger a download here, while
+  // moving to a different item still loads normally.
+  if (downloadingUrls.has(item.url) || predownloadingUrls.has(item.url)) {
+    try { await window.onigiri.cancelDownload(item.url); } catch { /* best effort */ }
+  }
+  downloadingUrls.delete(item.url);
+  predownloadingUrls.delete(item.url);
+  if (foregroundUrl === item.url) foregroundUrl = null;
+  setLocalVideo(filePath);
+  currentItemId = item.id;
+  // Not watching a downloaded file — suspend auto-delete bookkeeping so a
+  // locally-played 'ended' can't delete the room's copy mid-download.
+  noteWatchStart(null);
+  downloadError = null;
+  renderQueueList();
+  toast('Playing your local copy — the room download continues untouched.');
+}
+
 function toFileUrl(filePath) {
   let p = filePath.replace(/\\/g, '/');
   if (!p.startsWith('/')) p = '/' + p; // windows drive letters -> /C:/...
@@ -866,6 +1066,21 @@ function setLocalVideo(filePath) {
   setTimeout(() => { suppressPlayerEvents = false; }, 300);
   $('#video-empty').querySelector('p').textContent = 'Add a video to start';
   $('#video-empty').style.display = 'none';
+}
+
+// Auto-delete bookkeeping: tell the main process which queue item is on
+// screen (so "after watching" deletion can find the file) and reset the
+// local flag whenever a downloaded video finishes loading.
+function noteWatchStart(item) {
+  isCurrentItemLocal = !item;
+  window.onigiri.watchStart(item ? item.url : null).catch(() => {});
+}
+
+function wireWatchTracking() {
+  const video = $('#player');
+  video.addEventListener('ended', () => {
+    window.onigiri.watchDone().catch(() => {});
+  });
 }
 
 // -------------------------------------------------------------- networking
@@ -940,6 +1155,8 @@ function wireNetworkEvents() {
     renderParticipants(lastParticipants);
   });
   window.onigiri.onNetError(({ message }) => toast(message));
+
+  wireWatchTracking();
 
   window.onigiri.onTyping(({ username: who }) => {
     if (who === username) return;
@@ -1395,8 +1612,8 @@ async function openSettings() {
   refreshAppearanceButtons();
   $('#setting-avatar-url').value = config.avatarUrl;
   $('#setting-dir').value = config.downloadDir;
-  $('#setting-cookie-browser').value = config.cookiesFromBrowser || '';
   refreshQualityButtons();
+  refreshAutoDeleteButtons();
   $('#setting-bg-enabled').checked = config.backgroundEnabled !== false;
   $('#bg-switch-label').textContent = config.backgroundEnabled !== false ? 'Show background image' : 'Background image hidden';
   $('#setting-webhook').value = config.webhookUrl;
@@ -1507,6 +1724,17 @@ function wireSettings() {
     }
   });
 
+  // Auto-delete saves instantly like the other Downloads toggles — 'watched'
+  // deletes a video as soon as it ends, timed options sweep periodically.
+  $('#setting-autodelete').addEventListener('change', async (e) => {
+    try {
+      await window.onigiri.setConfig({ autoDelete: e.target.value });
+      config = await window.onigiri.getConfig();
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
   $('#settings-save').addEventListener('click', async () => {
     const btn = $('#settings-save');
     btn.disabled = true;
@@ -1517,8 +1745,8 @@ function wireSettings() {
         backgroundBlur: parseInt($('#setting-blur-amount').value, 10),
         backgroundParallax: $('#setting-parallax').checked,
         downloadDir: $('#setting-dir').value.trim(),
-        cookiesFromBrowser: $('#setting-cookie-browser').value.trim(),
         downloadQuality: config.downloadQuality || 'best',
+        autoDelete: config.autoDelete || 'never',
         discordRpc: config.discordRpc || { enabled: false, showParticipants: true, showGithubButton: true },
         webhookUrl: $('#setting-webhook').value.trim(),
         supabaseUrl: $('#setting-supabase-url').value.trim(),
@@ -1546,10 +1774,14 @@ function refreshQualityButtons() {
   });
 }
 
+function refreshAutoDeleteButtons() {
+  $('#setting-autodelete').value = config.autoDelete || 'never';
+}
+
 // Links inside the settings dialog must open in the user's default browser —
 // target=_blank alone would spawn a new Electron window.
 function wireAboutLinks() {
-  for (const a of document.querySelectorAll('.about-site, .about-github')) {
+  for (const a of document.querySelectorAll('.about-site, .about-github, .about-credit-link')) {
     a.addEventListener('click', (e) => {
       e.preventDefault();
       window.onigiri.openExternal(a.href);
@@ -1620,7 +1852,7 @@ async function runHealthCheck() {
   dialog.hidden = false;
   list.innerHTML = '';
 
-  const rows = ['ytdlp', 'ffmpeg', 'impersonate', 'plugins', 'cookies'].map((id) => {
+  const rows = ['ytdlp', 'ffmpeg'].map((id) => {
     const row = document.createElement('div');
     row.className = 'health-item is-running';
     row.dataset.id = id;
@@ -1643,10 +1875,11 @@ async function runHealthCheck() {
   for (const item of result.items) {
     const row = rows.find((r) => r.dataset.id === item.id);
     if (!row) continue;
-    row.className = `health-item ${item.ok ? 'is-ok' : 'is-fail'}`;
+    // warn = works but outdated (yellow); fail = missing/broken (red)
+    row.className = `health-item ${item.ok ? (item.warn ? 'is-warn' : 'is-ok') : 'is-fail'}`;
     row.querySelector('.health-label').textContent = item.label;
     row.querySelector('.health-detail').textContent = item.detail;
-    if (!item.ok && item.fix) {
+    if (item.fix && (!item.ok || item.warn)) {
       const fix = document.createElement('div');
       fix.className = 'health-fix';
       fix.textContent = `→ ${item.fix}`;
@@ -1654,5 +1887,5 @@ async function runHealthCheck() {
     }
   }
 
-  if (result.allOk) toast('All good — downloads are ready');
+  if (result.allOk && !result.items.some((i) => i.warn)) toast('All good — downloads are ready');
 }

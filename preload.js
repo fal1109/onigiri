@@ -18,7 +18,7 @@ contextBridge.exposeInMainWorld('onigiri', {
   getEmotesPath: () => ipcRenderer.invoke('emotes:path'),
 
   // room
-  hostRoom: (username) => ipcRenderer.invoke('room:host', { username }),
+  hostRoom: (username, playlistUrls = []) => ipcRenderer.invoke('room:host', { username, playlistUrls }),
   joinRoom: (code, username) => ipcRenderer.invoke('room:join', { code, username }),
   leaveRoom: () => ipcRenderer.invoke('room:leave'),
   getRole: () => ipcRenderer.invoke('room:role'),
@@ -26,6 +26,11 @@ contextBridge.exposeInMainWorld('onigiri', {
 
   // video
   downloadVideo: (url) => ipcRenderer.invoke('video:download', { url }),
+  cancelDownload: (url) => ipcRenderer.invoke('video:cancel-download', { url }),
+  chooseLocalVideo: () => ipcRenderer.invoke('video:choose-local'),
+  uploadVideo: (filePath) => ipcRenderer.invoke('video:upload', { filePath }),
+  watchStart: (url) => ipcRenderer.invoke('watch:start', { url }),
+  watchDone: (url) => ipcRenderer.invoke('watch:done', { url }),
   openInFolder: (p) => ipcRenderer.invoke('shell:open-path', p),
   openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
 
@@ -45,6 +50,7 @@ contextBridge.exposeInMainWorld('onigiri', {
   // events in
   onVideoProgress: (cb) => ipcRenderer.on('video:progress', (_e, data) => cb(data)),
   onVideoLog: (cb) => ipcRenderer.on('video:log', (_e, data) => cb(data)),
+  onUploadProgress: (cb) => ipcRenderer.on('upload:progress', (_e, data) => cb(data)),
   onRemotePlayerEvent: (cb) => ipcRenderer.on('net:remote-player-event', (_e, data) => cb(data)),
   onQueue: (cb) => ipcRenderer.on('net:queue', (_e, data) => cb(data)),
   onChat: (cb) => ipcRenderer.on('net:chat', (_e, data) => cb(data)),

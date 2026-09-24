@@ -366,7 +366,7 @@ button.chip:hover{ filter:brightness(1.1); }
   height:10px; background-color:transparent;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='10'%3E%3Cpath d='M0 5 Q5 0 10 5 T20 5' fill='none' stroke='rgba(255,255,255,.28)' stroke-width='2'/%3E%3C/svg%3E");
   background-repeat:repeat-x; background-size:20px 10px;
-  animation: seek-wave-scroll .6s linear infinite;
+  animation: seek-wave-scroll 1.2s linear infinite;
 }
 .player-seek-fill{
   position:absolute; left:0; top:0; bottom:0; width:0%;
@@ -382,7 +382,7 @@ button.chip:hover{ filter:brightness(1.1); }
   background-color:transparent;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='10'%3E%3Cpath d='M0 5 Q5 0 10 5 T20 5' fill='none' stroke='white' stroke-width='2'/%3E%3C/svg%3E");
   background-repeat:repeat-x; background-size:20px 10px;
-  animation: seek-wave-scroll .6s linear infinite;
+  animation: seek-wave-scroll 1.2s linear infinite;
 }
 @keyframes seek-wave-scroll{ from{ background-position-x:0; } to{ background-position-x:20px; } }
 .volume-ring{
@@ -703,6 +703,7 @@ input[type="range"]::-moz-range-thumb{
 }
 .health-dot{ width:10px; height:10px; border-radius:50%; margin-top:5px; flex:none; background:#9e9e9e; }
 .health-item.is-ok .health-dot{ background:#43a047; }
+.health-item.is-warn .health-dot{ background:#f5b83d; }
 .health-item.is-fail .health-dot{ background:#e5534b; }
 .health-item.is-running .health-dot{ background:#f5b83d; animation:health-pulse 1s ease-in-out infinite; }
 @keyframes health-pulse{ 50%{ opacity:.3; } }
@@ -758,6 +759,89 @@ input[type="range"]::-moz-range-thumb{
 .about-update-status.is-ok{ color:#43a047; }
 .about-update-status.is-outdated{ color: var(--md-primary); font-weight:500; }
 .about-update-status.is-error{ color: var(--md-error); }
+
+/* ---------------------------------- v1.5 ---------------------------------*/
+
+/* Host playlist builder (setup screen) — a plain "Link" input with a big
+   rounded plus button beside it; rows keep the order in which links were
+   added, because that order becomes the room's starting queue. */
+.playlist-rows{ display:flex; flex-direction:column; gap:4px; margin-bottom:8px; }
+.playlist-row{
+  display:flex; align-items:center; gap:8px;
+  background: var(--md-surface-container-low);
+  border-radius: var(--shape-sm);
+  padding:6px 8px;
+}
+.playlist-row-order{ font-size:11.5px; color: var(--md-on-surface-variant); flex-shrink:0; min-width:16px; }
+.playlist-row-url{
+  flex:1; min-width:0; font-size:12.5px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.playlist-row-remove{
+  width:22px; height:22px; border-radius:50%; border:none; cursor:pointer;
+  background: var(--md-surface-container-high); color: var(--md-on-surface-variant);
+  font-size:13px; line-height:1; flex-shrink:0;
+  display:flex; align-items:center; justify-content:center;
+}
+.playlist-row-remove:hover{ background: var(--md-error); color: var(--md-on-error); }
+.playlist-add-row{ display:flex; gap:8px; }
+.playlist-add-row input{ flex:1; }
+.playlist-add-btn{
+  width:44px; height:44px; flex-shrink:0;
+  border-radius: var(--shape-md);
+  border:none; cursor:pointer;
+  background: var(--md-primary); color: var(--md-on-primary);
+  display:flex; align-items:center; justify-content:center;
+  transition: box-shadow .15s ease, filter .15s ease;
+}
+.playlist-add-btn:hover{ box-shadow: var(--elev-1); filter:brightness(1.05); }
+.playlist-add-btn svg{ width:24px; height:24px; fill:currentColor; }
+
+/* Dropdown selects (auto-delete) — styled to match the text fields. The
+   native arrow can't be repositioned, so the select is appearance:none'd and
+   draws its own chevron, inset a bit further from the edge than the default. */
+.select-field{
+  width:100%; height:44px; padding:0 44px 0 14px;
+  border-radius: var(--shape-sm);
+  border:1px solid var(--md-outline);
+  -webkit-appearance:none; appearance:none;
+  background: var(--md-surface-container-low)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' stroke='%239C8D84' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    no-repeat right 18px center;
+  color: var(--md-on-surface);
+  font-size:14px;
+  cursor:pointer;
+}
+.select-field:focus{ outline:2px solid var(--md-primary); outline-offset:-1px; border-color:var(--md-primary); }
+
+/* Upload button in the stage toolbar */
+#upload-video-btn{ flex-shrink:0; }
+
+/* About → Services credit for litterbox.catbox.moe. */
+.about-credit{
+  display:flex; flex-direction:column; gap:4px;
+  background: var(--md-surface-container-high);
+  border-radius: var(--shape-md);
+  padding:12px 14px;
+}
+.about-credit-head{ display:flex; align-items:center; gap:14px; }
+/* Logo sits in a big squircle tile (same 35% radius as the setup-screen
+   squircle button) on a lighter surface so it reads against the card.
+   Two variants ship: catbox.png for light mode, catbox_darkmode.png for
+   dark — swapped off the theme attribute the app sets on :root. */
+.about-credit-img{
+  width:64px; height:64px; padding:12px;
+  object-fit:contain;
+  background: var(--md-surface-bright);
+  border-radius:35%;
+  flex-shrink:0;
+}
+.about-credit-img--dark{ display:none; }
+:root[data-theme="dark"] .about-credit-img--light{ display:none; }
+:root[data-theme="dark"] .about-credit-img--dark{ display:block; }
+.about-credit-line{ font-size:12.5px; line-height:1.5; }
+.about-credit-line a{ color: var(--md-primary); }
+.about-credit-note{ font-size:11.5px; opacity:.75; font-style:italic; }
 
 ::-webkit-scrollbar{ width:10px; height:10px; }
 ::-webkit-scrollbar-thumb{ background: var(--md-surface-container-highest); border-radius: var(--shape-full); }

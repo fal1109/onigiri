@@ -1,6 +1,6 @@
 {
   "name": "onigiri",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Onigiri — watch videos together, perfectly in sync, no latency.",
   "main": "main.js",
   "repository": "github:fal1109/onigiri",
@@ -26,7 +26,9 @@
     "files": [
       "main.js",
       "preload.js",
-      "src/**/*"
+      "src/**/*",
+      "build/catbox.png",
+      "build/catbox_darkmode.png"
     ],
     "linux": {
       "target": [

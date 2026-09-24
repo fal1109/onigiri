@@ -110,6 +110,18 @@
               <span>Your name</span>
               <input type="text" id="host-username" required autocomplete="off">
             </label>
+
+            <!-- Playlist builder: links added here become the room's starting
+                 queue, in exactly the order added — first at the top. -->
+            <div class="field">
+              <div id="playlist-rows" class="playlist-rows"></div>
+              <div class="playlist-add-row">
+                <input type="text" id="playlist-url-input" placeholder="Link" autocomplete="off">
+                <button type="button" id="playlist-add-btn" class="playlist-add-btn" title="Add to playlist" aria-label="Add to playlist">
+                  <svg viewBox="0 0 24 24"><path d="M19 13H13v6h-2v-6H5v-2h6V5h2v6h6v2Z" /></svg>
+                </button>
+              </div>
+            </div>
             <button type="submit" class="btn btn-filled">Create room</button>
           </form>
 
@@ -194,8 +206,9 @@
 
           <div id="bottom-bar" class="bottom-bar">
             <div class="stage-toolbar">
-              <input type="text" id="video-url" class="url-input" placeholder="Paste a video link…" title="Works with any site yt-dlp supports. Some sites need a one-time extra setup — see otaku/otaku.md.">
+              <input type="text" id="video-url" class="url-input" placeholder="Paste a video link…" title="Works with any site yt-dlp supports.">
               <button id="add-queue-btn" class="btn btn-filled">Add to queue</button>
+              <button id="upload-video-btn" class="btn btn-outlined" title="Upload a video file (max 1 GiB) to litterbox — the link is added for everyone to download">Upload video</button>
               <button id="skip-btn" class="icon-btn" title="Skip to next in queue" aria-label="Skip">
                 <svg viewBox="0 0 24 24">
                   <path d="M6 6v12l8.5-6ZM16 6v12h2V6Z" />
@@ -310,9 +323,19 @@
                 </div>
               </label>
               <label class="field">
-                <span>Cookie browser</span>
-                <input type="text" id="setting-cookie-browser" placeholder="brave — or brave+gnomekeyring on Linux">
-                <span class="field-hint">Visit the site once in this browser first. Firefox forks: <code>firefox:/path/to/profile</code>.</span>
+                <span>Auto-delete downloaded videos</span>
+                <select id="setting-autodelete" class="select-field">
+                  <option value="never">Never</option>
+                  <option value="watched">After watching</option>
+                  <option value="5h">5h</option>
+                  <option value="10h">10h</option>
+                  <option value="12h">12h</option>
+                  <option value="24h">24h</option>
+                  <option value="2d">2d</option>
+                  <option value="4d">4d</option>
+                  <option value="7d">7d</option>
+                </select>
+                <span class="field-hint">“After watching” deletes a video when it finishes playing. Timed options count from when the download finished — minimum 5h, maximum 7d.</span>
               </label>
               <div class="field-row">
                 <button type="button" id="run-setup-check-btn" class="btn btn-outlined btn-small">Run setup check</button>
@@ -396,6 +419,16 @@
                     <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/>
                   </svg>
                 </a>
+              </div>
+
+              <h3 class="panel-subheading">Services</h3>
+              <div class="about-credit">
+                <div class="about-credit-head">
+                  <img class="about-credit-img about-credit-img--light" src="../build/catbox.png" alt="">
+                  <img class="about-credit-img about-credit-img--dark" src="../build/catbox_darkmode.png" alt="">
+                  <span class="about-credit-line">video hosting platform <a href="https://litterbox.catbox.moe/" class="about-credit-link">litterbox.catbox.moe</a></span>
+                </div>
+                <span class="about-credit-note">catbox.moe is not affiliated with onigiri</span>
               </div>
 
               <h3 class="panel-subheading">Version</h3>

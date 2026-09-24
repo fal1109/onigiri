@@ -3,7 +3,8 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
-const { spawn, execFileSync } = require('child_process');
+const { spawn } = require('child_process');
+const https = require('https');
 const { createClient } = require('@supabase/supabase-js');
 
 // supabase-js's Realtime client needs a WebSocket implementation when run
@@ -34,6 +35,8 @@ function defaultConfig() {
     backgroundParallax: true,
     customTheme: null,
     downloadQuality: 'best',
+    // 'never' | 'watched' | '5h' | '10h' | '12h' | '24h' | '2d' | '4d' | '7d'
+    autoDelete: 'never',
     discordRpc: { enabled: false, showParticipants: true, showGithubButton: true }
   };
 }
@@ -107,6 +110,7 @@ function createWindow() {
 
 app.whenReady().then(() => {
   fs.mkdirSync(config.downloadDir, { recursive: true });
+  startAutoDeleteSweep();
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -372,14 +376,22 @@ function subscribeToRoom(code, username) {
   });
 }
 
-function hostRoom(username) {
+function hostRoom(username, playlistUrls = []) {
   stopEverything();
   role = 'host';
   originalHostUsername = username;
   currentUsername = username;
   sawInitialPresenceSync = false;
+  // Keep order exactly as entered: queueAdd appends, so seeding sequentially
+  // preserves "first added plays first".
+  const playlist = (Array.isArray(playlistUrls) ? playlistUrls : [])
+    .map((u) => String(u || '').trim())
+    .filter(Boolean);
   const code = randomRoomCode();
-  return subscribeToRoom(code, username).then(() => ({ code }));
+  return subscribeToRoom(code, username).then(() => {
+    for (const url of playlist) queueAdd(url);
+    return { code };
+  });
 }
 
 function joinRoom(code, username) {
@@ -471,6 +483,9 @@ function requestSync() {
 }
 
 function stopEverything() {
+  // Room's over — nothing in flight is worth bandwidth anymore (includes
+  // playlist downloads kicked off by a host who then left).
+  for (const url of [...activeDownloads.keys()]) cancelDownload(url);
   if (channel) {
     try { channel.unsubscribe(); } catch {}
     if (supabaseClient) { try { supabaseClient.removeChannel(channel); } catch {} }
@@ -504,8 +519,6 @@ async function postToDiscord(username, text) {
 // ---------------------------------------------------------------------------
 // Video download via yt-dlp
 // ---------------------------------------------------------------------------
-const CHROMIUM_UA_BROWSERS = new Set(['brave', 'chrome', 'chromium', 'edge', 'opera', 'vivaldi', 'whale']);
-
 // Quality selector → yt-dlp format selectors. Height caps fall back to the
 // best available stream when the cap isn't offered (e.g. site maxes at 480p).
 const DOWNLOAD_QUALITY_FORMATS = {
@@ -515,42 +528,8 @@ const DOWNLOAD_QUALITY_FORMATS = {
   480: 'bv*[height<=480]+ba/b[height<=480]/bv*+ba/b',
   360: 'bv*[height<=360]+ba/b[height<=360]/bv*+ba/b',
 };
-// Firefox forks (Floorp, Zen, LibreWolf, …) aren't known to yt-dlp by name,
-// but their cookies are plain Firefox cookies: users point cookiesFromBrowser
-// at the profile dir instead, e.g. "firefox:~/.floorp/xxxx.default".
-const FIREFOX_FAMILY_BROWSERS = new Set(['firefox', 'floorp', 'zen', 'librewolf', 'waterfox']);
 
-// Build the exact user-agent a browser presents. Cloudflare pins cf_clearance
-// cookies to the UA that earned them, so this must match version AND platform.
-function browserUserAgent(kind, major) {
-  const platform = process.platform === 'win32' ? 'Windows NT 10.0; Win64; x64'
-    : process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10_15_7'
-    : 'X11; Linux x86_64';
-  if (kind === 'firefox') {
-    const mac = process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10.15' : platform;
-    return `Mozilla/5.0 (${mac}; rv:${major}.0) Gecko/20100101 Firefox/${major}.0`;
-  }
-  return `Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
-}
-
-// Best-effort: find the browser's major version by running its --version.
-const BROWSER_BIN_ALIASES = {
-  zen: ['zen', 'zen-browser'],
-  librewolf: ['librewolf', 'librewolf-bin'],
-};
-
-function browserMajorVersion(browserName) {
-  for (const bin of BROWSER_BIN_ALIASES[browserName] || [browserName]) {
-    try {
-      const version = execFileSync(bin, ['--version'], { timeout: 5000 }).toString().trim();
-      const match = version.match(/(\d+)(?:\.\d+)*/);
-      if (match) return match[1];
-    } catch { /* not on PATH — try the next candidate */ }
-  }
-  return null;
-}
-
-// Bundled-first binary resolution: a packaged app ships yt-dlp/ffmpeg/plugins
+// Bundled-first binary resolution: a packaged app ships yt-dlp/ffmpeg
 // inside its resources dir; a dev checkout falls back to whatever is on PATH.
 // This is what lets the setup.exe/AppImage be self-contained.
 function resourcesDir() {
@@ -574,16 +553,8 @@ function resolveFfmpeg() {
   return bundledBin(process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg', 'ffmpeg') || 'ffmpeg';
 }
 
-function bundledPluginDirs() {
-  const dir = path.join(resourcesDir(), 'plugins');
-  if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir, { withFileTypes: true })
-    .filter((e) => e.isDirectory())
-    .map((e) => path.join(dir, e.name));
-}
-
 // --- health probes (shared by the first-run checklist and `health:check`) ---
-function probeBinary(name, cmd, versionArg, minFeatures) {
+function probeBinary(cmd, versionArg) {
   return new Promise((resolve) => {
     let child;
     try {
@@ -604,82 +575,260 @@ function probeBinary(name, cmd, versionArg, minFeatures) {
   });
 }
 
-function probeImpersonation(cmd) {
-  return new Promise((resolve) => {
-    const child = spawn(cmd, ['--list-impersonate-targets'], { stdio: ['ignore', 'pipe', 'pipe'] });
-    let out = '';
-    const timer = setTimeout(() => { child.kill(); resolve({ ok: false, detail: 'timed out — yt-dlp too old' }); }, 10000);
-    child.stdout.on('data', (c) => { out += c; });
-    child.stderr.on('data', (c) => { out += c; });
-    child.on('error', () => { clearTimeout(timer); resolve({ ok: false, detail: 'not found' }); });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({ ok: code === 0 && /Chrome/i.test(out), detail: code === 0 ? 'curl_cffi targets available' : 'missing — install official yt-dlp or curl_cffi' });
+// Latest yt-dlp release version from GitHub — lets the setup check flag an
+// outdated binary (yellow dot) even though it still works. yt-dlp releases
+// constantly and sites change under it, so stale versions rot quickly.
+async function latestYtDlpVersion() {
+  try {
+    const res = await net.fetch('https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest', {
+      headers: { 'User-Agent': 'onigiri-app', 'Accept': 'application/vnd.github+json' },
+      signal: AbortSignal.timeout(8000),
     });
-  });
+    if (!res.ok) return null;
+    return String((await res.json()).tag_name || '').replace(/^v/i, '') || null;
+  } catch {
+    return null;
+  }
 }
 
-function probePlugins() {
-  return new Promise((resolve) => {
-    const cmd = resolveYtDlp();
-    // NOTE: this yt-dlp's --list-extractors omits plugin extractors, so probe
-    // via the verbose debug line instead, which names every loaded plugin.
-    const args = ['-v', '--simulate', 'probe://plugins'];
-    for (const d of bundledPluginDirs()) args.push('--plugin-dirs', d);
-    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    let out = '';
-    const timer = setTimeout(() => { child.kill(); resolve({ ok: false, detail: 'timed out' }); }, 15000);
-    child.stdout.on('data', (c) => { out += c; });
-    child.stderr.on('data', (c) => { out += c; });
-    child.on('error', () => { clearTimeout(timer); resolve({ ok: false, detail: 'yt-dlp not found' }); });
-    child.on('close', () => {
-      clearTimeout(timer);
-      const names = (out.match(/Extractor Plugins: (.*)/) || [])[1] || '';
-      const found = ['AnimepaheIE', 'HiAnimeIE'].filter((n) => names.includes(n));
-      resolve({
-        ok: found.length === 2,
-        found,
-        detail: found.length === 2 ? `Plugin supported — ${found.join(', ')}`
-          : found.length === 1 ? `Plugin supported — only ${found.join(', ')} loaded`
-          : 'No plugins installed',
+// url -> { promise, controller }. Two yt-dlps writing one .part file breaks,
+// so one download per URL; the controller carries the process handle and the
+// destination paths it announced, so a canceled download's partial files can
+// be cleaned up afterwards.
+// ---------------------------------------------------------------------------
+// Upload — hosts push a video file to litterbox.catbox.moe so the room can
+// queue the returned link like any other. The API (see
+// https://litterbox.catbox.moe/tools.php) is a single multipart POST:
+//   reqtype=fileupload, time=1h|12h|24h|72h, fileToUpload=<file>
+// Onigiri always uses time=12h per the product decision, uploads are
+// anonymous (no account/userhash), and litterbox enforces a 1 GiB cap that
+// we pre-check so users get a friendly error instead of a wasted upload.
+// The response body is just the direct link to the uploaded file.
+// ---------------------------------------------------------------------------
+const LITTERBOX_UPLOAD_URL = 'https://litterbox.catbox.moe/resources/internals/api.php';
+const LITTERBOX_EXPIRY = '12h';
+const LITTERBOX_MAX_BYTES = 1024 * 1024 * 1024; // 1 GiB
+const UPLOAD_NAME_LENGTH = 6;
+
+// a-z0-9 anonymous name, exactly 6 characters — kept short because long
+// file names make the eventual download filename unwieldy.
+function randomUploadName() {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let out = '';
+  for (let i = 0; i < UPLOAD_NAME_LENGTH; i++) out += chars[Math.floor(Math.random() * chars.length)];
+  return out;
+}
+
+async function uploadVideoFile(filePath) {
+  let stat;
+  try { stat = await fs.promises.stat(filePath); } catch {
+    throw new Error('Could not read that file.');
+  }
+  if (stat.size > LITTERBOX_MAX_BYTES) {
+    throw new Error(`That file is ${(stat.size / (1024 * 1024 * 1024)).toFixed(2)} GiB — litterbox only accepts files up to 1 GiB.`);
+  }
+  if (stat.size === 0) throw new Error('That file is empty.');
+
+  // Multipart body assembled by hand (no extra dependency): boundary, the two
+  // text fields, then the file as the final part. Sent through Node's https
+  // module — Electron's net loader rejected this shape twice (net.fetch can't
+  // stream a file body: litterbox saw no fields and answered 412; net.request
+  // refuses a manual Content-Length: ERR_INVALID_ARGUMENT). Node https gives
+  // us a real file stream with backpressure and an exact Content-Length.
+  const promise = new Promise((resolve, reject) => {
+    const boundary = `----onigiri${crypto.randomBytes(12).toString('hex')}`;
+    const fileName = randomUploadName();
+    const head = Buffer.from(
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="reqtype"\r\n\r\nfileupload\r\n` +
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="time"\r\n\r\n${LITTERBOX_EXPIRY}\r\n` +
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="fileToUpload"; filename="${fileName}"\r\n` +
+      `Content-Type: application/octet-stream\r\n\r\n`,
+      'utf-8'
+    );
+    const tail = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf-8');
+
+    let sentBytes = 0;
+    let settled = false;
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      stream.destroy();
+      reject(err);
+    };
+    const stream = fs.createReadStream(filePath, { highWaterMark: 512 * 1024 });
+    const request = https.request(LITTERBOX_UPLOAD_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        // litterbox rejects requests without a User-Agent header.
+        'User-Agent': 'onigiri-app',
+        'Content-Length': head.length + stat.size + tail.length,
+      },
+      timeout: 30 * 60 * 1000,
+    }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => {
+        if (settled) return;
+        settled = true;
+        stream.destroy();
+        const text = body.trim();
+        if (res.statusCode !== 200) {
+          reject(new Error(`Litterbox returned ${res.statusCode}${text ? `: ${text.slice(0, 200)}` : ''}`));
+        } else if (!/^https?:\/\/\S+$/i.test(text)) {
+          reject(new Error(`Litterbox replied unexpectedly: ${text.slice(0, 200)}`));
+        } else {
+          resolve(text);
+        }
       });
     });
-  });
-}
+    request.on('timeout', () => fail(new Error('Upload timed out — litterbox took too long to answer.')));
+    request.on('error', fail);
+    stream.on('error', fail);
 
-function probeCookies(cmd) {
-  return new Promise((resolve) => {
-    if (!config.cookiesFromBrowser) {
-      return resolve({ ok: false, detail: 'not configured — set it under Settings → Downloads' });
-    }
-    const child = spawn(cmd, ['--simulate', '--cookies-from-browser', config.cookiesFromBrowser, 'https://example.com/'], { stdio: ['ignore', 'pipe', 'pipe'] });
-    let out = '';
-    const timer = setTimeout(() => { child.kill(); resolve({ ok: false, detail: 'timed out' }); }, 20000);
-    child.stdout.on('data', (c) => { out += c; });
-    child.stderr.on('data', (c) => { out += c; });
-    child.on('error', () => { clearTimeout(timer); resolve({ ok: false, detail: 'yt-dlp not found' }); });
-    child.on('close', () => {
-      clearTimeout(timer);
-      const m = out.match(/Extracted (\d+) cookies/);
-      if (m && Number(m[1]) > 0) resolve({ ok: true, detail: `${m[1]} cookies from ${config.cookiesFromBrowser}` });
-      else if (/Extracted 0 cookies/.test(out)) resolve({ ok: false, detail: `could not decrypt ${config.cookiesFromBrowser}'s cookies (Linux: try a "+gnomekeyring" suffix)` });
-      else if (/could not find/i.test(out)) resolve({ ok: false, detail: `browser "${config.cookiesFromBrowser}" not found` });
-      else if (/firefox cookies database/i.test(out)) resolve({ ok: false, detail: 'no Firefox cookies at that location — Firefox forks (Floorp, Zen, …) need the full profile path, e.g. firefox:~/.floorp/xxxx.default-default' });
-      else resolve({ ok: false, detail: 'cookie extraction failed' });
+    // Backpressure: pause the file read whenever the socket buffer fills.
+    request.on('drain', () => stream.resume());
+
+    request.write(head);
+    stream.on('data', (chunk) => {
+      sentBytes += chunk.length;
+      send('upload:progress', {
+        filePath,
+        percent: Math.min(99, (sentBytes / (stat.size + head.length + tail.length)) * 100),
+      });
+      if (!request.write(chunk)) stream.pause();
     });
+    stream.on('end', () => request.end(tail));
   });
+
+  activeUploads.set(filePath, { promise });
+  try {
+    return await promise;
+  } finally {
+    activeUploads.delete(filePath);
+  }
 }
 
-const activeDownloads = new Map(); // url -> in-flight promise (yt-dlp breaks on two processes writing one .part file)
+// filePath -> in-flight upload, so double-clicks reuse the same request.
+const activeUploads = new Map();
+
+// ---------------------------------------------------------------------------
+// Auto-delete — downloaded videos can be removed either right after the room
+// finishes watching them or after a fixed age (5h → 7d, user-chosen in
+// Settings → Downloads). Every finished download is recorded (by URL and by
+// file path) with its finishedAt timestamp in a small JSON next to the
+// config; the periodic sweep deletes anything older than the chosen window,
+// and a 'watch:done' IPC (player ended) triggers immediate deletion when
+// autoDelete === 'watched'. Timestamps are kept even for files that get
+// deleted, so changing the setting later still applies sensibly.
+// ---------------------------------------------------------------------------
+const AUTO_DELETE_CHOICES = { '5h': 5 * 3600e3, '10h': 10 * 3600e3, '12h': 12 * 3600e3, '24h': 24 * 3600e3, '2d': 2 * 86400e3, '4d': 4 * 86400e3, '7d': 7 * 86400e3 };
+const DOWNLOAD_HISTORY_PATH = path.join(app.getPath('userData'), 'onigiri-downloads.json');
+const AUTO_DELETE_SWEEP_MS = 60 * 1000;
+
+function loadDownloadHistory() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(DOWNLOAD_HISTORY_PATH, 'utf-8'));
+    if (parsed && typeof parsed === 'object') {
+      return { finishedAtByUrl: parsed.finishedAtByUrl || {}, pathsByUrl: parsed.pathsByUrl || {} };
+    }
+  } catch { /* first run or corrupt file — start fresh */ }
+  return { finishedAtByUrl: {}, pathsByUrl: {} };
+}
+
+let downloadHistory = null;
+let autoDeleteSweepTimer = null;
+
+function recordDownloadFinished(url, filePath) {
+  if (!url || !filePath) return;
+  if (!downloadHistory) downloadHistory = loadDownloadHistory();
+  downloadHistory.pathsByUrl[url] = filePath;
+  try { fs.writeFileSync(DOWNLOAD_HISTORY_PATH, JSON.stringify(downloadHistory, null, 2)); } catch { /* non-fatal */ }
+}
+
+function recordWatchFinished(url) {
+  if (!url) return;
+  if (!downloadHistory) downloadHistory = loadDownloadHistory();
+  downloadHistory.finishedAtByUrl[url] = Date.now();
+  try { fs.writeFileSync(DOWNLOAD_HISTORY_PATH, JSON.stringify(downloadHistory, null, 2)); } catch { /* non-fatal */ }
+}
+
+function deleteRecordedFile(url) {
+  const target = downloadHistory?.pathsByUrl?.[url];
+  if (!target) return false;
+  try {
+    if (fs.existsSync(target)) fs.unlinkSync(target);
+  } catch { return false; } // locked on Windows etc. — the sweep retries
+  delete downloadHistory.pathsByUrl[url];
+  try { fs.writeFileSync(DOWNLOAD_HISTORY_PATH, JSON.stringify(downloadHistory, null, 2)); } catch { /* non-fatal */ }
+  return true;
+}
+
+function sweepAutoDelete() {
+  if (!downloadHistory) downloadHistory = loadDownloadHistory();
+  const window = AUTO_DELETE_CHOICES[config.autoDelete];
+  if (!window) return;
+  const now = Date.now();
+  for (const [url, ts] of Object.entries(downloadHistory.finishedAtByUrl)) {
+    if (now - ts >= window) {
+      deleteRecordedFile(url);
+      delete downloadHistory.finishedAtByUrl[url];
+    }
+  }
+  try { fs.writeFileSync(DOWNLOAD_HISTORY_PATH, JSON.stringify(downloadHistory, null, 2)); } catch { /* non-fatal */ }
+}
+
+function startAutoDeleteSweep() {
+  if (autoDeleteSweepTimer) return;
+  downloadHistory = loadDownloadHistory();
+  autoDeleteSweepTimer = setInterval(sweepAutoDelete, AUTO_DELETE_SWEEP_MS);
+}
+
+// url -> { promise, controller }. Two yt-dlps writing one .part file breaks,
+// so one download per URL; the controller carries the process handle and the
+// destination paths yt-dlp announced, so a canceled download's partial files
+// can be cleaned up afterwards.
+const activeDownloads = new Map();
 
 function downloadVideo(url) {
-  if (activeDownloads.has(url)) return activeDownloads.get(url);
-  const job = runDownload(url).finally(() => activeDownloads.delete(url));
-  activeDownloads.set(url, job);
+  const existing = activeDownloads.get(url);
+  if (existing) return existing.promise;
+  const controller = { canceled: false, proc: null, destinations: new Set() };
+  const job = runDownload(url, controller).finally(() => activeDownloads.delete(url));
+  activeDownloads.set(url, { promise: job, controller });
   return job;
 }
 
-function runDownload(url) {
+function cancelDownload(url) {
+  const active = activeDownloads.get(url);
+  if (!active) return;
+  active.controller.canceled = true;
+  if (active.controller.proc) {
+    try { active.controller.proc.kill(); } catch { /* already dead */ }
+  }
+  // If the process already exited, its close handler ran before the canceled
+  // flag was set — clean up here instead.
+  if (active.controller.proc && active.controller.proc.exitCode !== null) {
+    cleanupPartialFiles(active.controller);
+  }
+}
+
+// yt-dlp leaves `<target>.part` (and per-format `.fNNN.mp4.part`) files behind
+// when killed. It announces each destination on stdout before writing it, so
+// we remember them and can delete the orphans when a download is canceled.
+function cleanupPartialFiles(controller) {
+  for (const dest of controller.destinations || []) {
+    for (const candidate of [dest, `${dest}.part`]) {
+      try { if (fs.existsSync(candidate)) fs.unlinkSync(candidate); } catch { /* locked or gone — fine */ }
+    }
+  }
+}
+
+function runDownload(url, controller) {
   return new Promise((resolve, reject) => {
     fs.mkdirSync(config.downloadDir, { recursive: true });
     const outTemplate = path.join(config.downloadDir, '%(title).150B [%(id)s].%(ext)s');
@@ -689,14 +838,6 @@ function runDownload(url) {
       // youtube player_client overrides) would otherwise break app downloads.
       '--ignore-config',
       '-f', DOWNLOAD_QUALITY_FORMATS[config.downloadQuality] || DOWNLOAD_QUALITY_FORMATS.best,
-      '--impersonate', 'chrome',
-      // HLS streams must go through yt-dlp's native downloader: ffmpeg can't
-      // do Chrome TLS impersonation or carry cf_clearance cookies, so the CDN
-      // 403s its segment requests ("ffmpeg exited with code 8").
-      '--hls-prefer-native',
-      // Space out page requests a little — the embed host rate-limits bursts,
-      // which otherwise shows up as a confusing "Requested format is not available".
-      '--sleep-requests', '1',
       '--merge-output-format', 'mp4',
       '--restrict-filenames',
       '--no-playlist',
@@ -707,27 +848,11 @@ function runDownload(url) {
       // lines (bar stuck at 0%) — --progress turns them back on.
       '--progress',
       '--print', 'after_move:filepath'
-    ];    // Some CDNs only serve video to a session that already visited the page in
-    // a browser — pass that browser's cookies when the user configured one.
-    if (config.cookiesFromBrowser) {
-      args.splice(1, 0, '--cookies-from-browser', config.cookiesFromBrowser);
-      // Cloudflare pins cf_clearance cookies to the exact user-agent that earned
-      // them, so reuse the cookie browser's UA. Chromium UAs only vary by major
-      // version; Firefox-family forks masquerade as their upstream version.
-      const browserName = config.cookiesFromBrowser.split('+')[0].split(':')[0].toLowerCase();
-      const kind = CHROMIUM_UA_BROWSERS.has(browserName) ? 'chromium'
-        : FIREFOX_FAMILY_BROWSERS.has(browserName) ? 'firefox' : null;
-      if (kind) {
-        try {
-          const major = browserMajorVersion(browserName);
-          if (major) args.splice(1, 0, '--user-agent', browserUserAgent(kind, major));
-        } catch { /* browser not on PATH — yt-dlp will just use its default UA */ }
-      }
-    }
-    for (const d of bundledPluginDirs()) args.splice(1, 0, '--plugin-dirs', d);
+    ];
     const ffmpeg = resolveFfmpeg();
     if (ffmpeg !== 'ffmpeg') args.splice(1, 0, '--ffmpeg-location', ffmpeg);
     const proc = spawn(resolveYtDlp(), args);
+    controller.proc = proc;
     let finalPath = '';
     let stderr = '';
     let stdoutBuffer = '';
@@ -750,6 +875,11 @@ function runDownload(url) {
         if ((trimmed.includes('/') || trimmed.includes('\\')) && !trimmed.startsWith('[')) {
           finalPath = trimmed;
         }
+        // Remember every file yt-dlp says it's writing, so a canceled
+        // download's partials can be deleted (see cleanupPartialFiles).
+        const destMatch = trimmed.match(/^\[download\]\s+Destination:\s+(.+)/)
+          || trimmed.match(/^\[Merger\]\s+Merging formats into "(.+)"/);
+        if (destMatch) controller.destinations.add(destMatch[1].trim());
         send('video:log', { line: trimmed });
       }
     });
@@ -764,22 +894,20 @@ function runDownload(url) {
         const trimmed = stdoutBuffer.trim();
         if ((trimmed.includes('/') || trimmed.includes('\\')) && !trimmed.startsWith('[')) finalPath = trimmed;
       }
+      if (controller.canceled) {
+        cleanupPartialFiles(controller);
+        reject(new Error('Download canceled'));
+        return;
+      }
       if (code === 0 && finalPath) {
         send('video:progress', { percent: 100, url });
+        recordDownloadFinished(url, finalPath);
         resolve(finalPath);
       } else if (code === 0) {
         reject(new Error('yt-dlp finished but no output file path was captured.'));
       } else {
         const lastErr = stderr.trim().split('\n').pop() || `yt-dlp exited with code ${code}`;
-        // Direct CDN links (e.g. animepahe's vault-*.uwucdn.top mp4s) carry a
-        // short-lived signed token that expires within minutes — a 403 there
-        // almost always means the link died, not that the app is broken.
-        if (/HTTP Error 403|Forbidden/i.test(lastErr) && /uwucdn|vault-|\?file=/.test(url)) {
-          reject(new Error('This download link has expired or was rejected by the CDN. '
-            + 'Copy a fresh one right before downloading, or better, paste the animepahe watch-page URL instead.'));
-        } else {
-          reject(new Error(lastErr));
-        }
+        reject(new Error(lastErr));
       }
     });
   });
@@ -791,25 +919,36 @@ function runDownload(url) {
 ipcMain.handle('config:get', () => config);
 
 // Powers the first-run checklist / Settings → Downloads → “Run setup check”.
+// Kept to yt-dlp + ffmpeg only — the app downloads whatever users paste and
+// endorses no particular source. An installed-but-outdated yt-dlp still gets
+// a yellow dot: it works, but sites change under old versions fast.
 ipcMain.handle('health:check', async () => {
-  const ytdlp = resolveYtDlp();
-  const [ytdlpInfo, ffmpegInfo, impersonation, plugins, cookies] = await Promise.all([
-    probeBinary('yt-dlp', ytdlp, '--version'),
-    probeBinary('ffmpeg', resolveFfmpeg(), '-version'),
-    probeImpersonation(ytdlp),
-    probePlugins(),
-    probeCookies(ytdlp),
+  const [ytdlpInfo, ffmpegInfo, latestYtdlp] = await Promise.all([
+    probeBinary(resolveYtDlp(), '--version'),
+    probeBinary(resolveFfmpeg(), '-version'),
+    latestYtDlpVersion(),
   ]);
   const ffmpegOk = ffmpegInfo.ok || /ffmpeg/i.test(ffmpegInfo.detail);
+  const ytdlpOutdated = ytdlpInfo.ok && latestYtdlp && isNewerVersion(latestYtdlp, ytdlpInfo.version);
   return {
     items: [
-      { id: 'ytdlp', label: 'yt-dlp', ok: ytdlpInfo.ok, detail: ytdlpInfo.detail, fix: ytdlpInfo.ok ? null : 'Install yt-dlp (see README) — the setup.exe / AppImage bundles it automatically.' },
+      {
+        id: 'ytdlp',
+        label: 'yt-dlp',
+        ok: ytdlpInfo.ok,
+        warn: ytdlpOutdated,
+        detail: ytdlpOutdated
+          ? `${ytdlpInfo.version} — outdated, latest is ${latestYtdlp}. Old versions break as sites change; update it.`
+          : ytdlpInfo.detail,
+        fix: !ytdlpInfo.ok
+          ? 'Install yt-dlp (see README) — the setup.exe / AppImage bundles it automatically.'
+          : ytdlpOutdated
+            ? 'Update yt-dlp: `yt-dlp -U`, winget, or pip install -U yt-dlp (see README).'
+            : null,
+      },
       { id: 'ffmpeg', label: 'ffmpeg', ok: ffmpegOk, detail: ffmpegInfo.detail, fix: ffmpegOk ? null : 'Install ffmpeg — needed to merge video/audio streams into one file.' },
-      { id: 'impersonate', label: 'Browser impersonation (Cloudflare bypass)', ok: impersonation.ok, detail: impersonation.detail, fix: impersonation.ok ? null : 'Use the official yt-dlp binary, or pip install curl_cffi.' },
-      { id: 'plugins', label: 'Site plugins', ok: plugins.ok, detail: plugins.detail, fix: plugins.ok ? null : 'Run the setup script in the otaku folder of the repository.' },
-      { id: 'cookies', label: 'Browser cookies', ok: cookies.ok, detail: cookies.detail, fix: cookies.ok ? null : 'Settings → Downloads → set your cookie browser (e.g. brave, chrome). Visit the site once in that browser first so it earns the Cloudflare clearance.' },
     ],
-    allOk: ytdlpInfo.ok && ffmpegOk && impersonation.ok && plugins.ok && cookies.ok,
+    allOk: ytdlpInfo.ok && ffmpegOk,
   };
 });
 
@@ -897,9 +1036,9 @@ ipcMain.handle('theme:import', async () => {
   }
 });
 
-ipcMain.handle('room:host', async (_e, { username }) => {
+ipcMain.handle('room:host', async (_e, { username, playlistUrls }) => {
   try {
-    const { code } = await hostRoom(username);
+    const { code } = await hostRoom(username, playlistUrls || []);
     activeRoomCode = code;
     updateDiscordRpc();
     return { ok: true, code };
@@ -932,6 +1071,58 @@ ipcMain.handle('video:download', async (_e, { url }) => {
   const filePath = await downloadVideo(url);
   return { filePath };
 });
+
+// Cancels the in-flight yt-dlp for this URL (if any) and deletes whatever
+// partial file it left behind. Used when the user swaps in a local file
+// instead of waiting for the download to finish.
+ipcMain.handle('video:cancel-download', (_e, { url }) => {
+  cancelDownload(url);
+  return { ok: true };
+});
+
+// Open-file picker for "play a video I already have" — path stays local.
+ipcMain.handle('video:choose-local', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    filters: [
+      { name: 'Videos', extensions: ['mp4', 'mkv', 'webm', 'mov', 'avi', 'm4v', 'flv', 'ts', 'ogv'] },
+      { name: 'All files', extensions: ['*'] },
+    ],
+  });
+  if (result.canceled || !result.filePaths[0]) return null;
+  return result.filePaths[0];
+});
+
+// Upload the picked file to litterbox (12h expiry, 6-char name, 1 GiB cap).
+ipcMain.handle('video:upload', async (_e, { filePath }) => {
+  if (typeof filePath !== 'string' || !filePath) throw new Error('No file chosen.');
+  if (activeUploads.has(filePath)) return activeUploads.get(filePath).promise;
+  return uploadVideoFile(filePath);
+});
+
+// The player's current source URL, for auto-delete bookkeeping.
+const watchState = { currentUrl: null };
+
+// Playback bookkeeping for auto-delete: 'start' remembers which URL the
+// player is currently on, 'done' fires when that video ends (ended event).
+ipcMain.handle('watch:start', (_e, { url }) => {
+  watchState.currentUrl = url || null;
+  return { ok: true };
+});
+
+ipcMain.handle('watch:done', (_e, { url }) => {
+  const finishedUrl = url || watchState.currentUrl;
+  watchState.currentUrl = null;
+  if (finishedUrl) {
+    recordWatchFinished(finishedUrl);
+    if (config.autoDelete === 'watched') {
+      const deleted = deleteRecordedFile(finishedUrl);
+      if (deleted) send('net:system', { text: 'Video deleted (auto-delete after watching)' });
+    }
+  }
+  return { ok: true };
+});
+
 
 ipcMain.handle('player:event', (_e, { action, time, itemId }) => {
   sendPlayerEvent(action, time, itemId);
