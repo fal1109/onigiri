@@ -14,18 +14,8 @@ watch together app that downloads the videos so no one suffers from internet lag
    - Windows: powershell as administrator; `winget install Gyan.FFmpeg -e`
 
 
-	
-
-
-### the app is still in development, expect bugs
+### app in development still. 1.2 is the most complete version and recommended for the average person
 
 ## THIS IS AI SLOP. I MADE THIS FOR A GROUP OF FRIENDS AND YOU CAN DO WHATEVER YOU WANT WITH IT.
 
-
-## Install & run
-
-```bash
-npm install
-npm start
-```
 
