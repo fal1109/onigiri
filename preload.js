@@ -7,8 +7,12 @@ contextBridge.exposeInMainWorld('onigiri', {
   getAppVersion: () => ipcRenderer.invoke('app:version'),
   checkForUpdates: () => ipcRenderer.invoke('app:check-updates'),
   chooseDownloadDir: () => ipcRenderer.invoke('dialog:choose-dir'),
+  chooseBackgroundImage: () => ipcRenderer.invoke('background:choose'),
+  getBackgroundPalette: (url) => ipcRenderer.invoke('background:palette', url),
   healthCheck: () => ipcRenderer.invoke('health:check'),
   importTheme: () => ipcRenderer.invoke('theme:import'),
+  getEggAssets: () => ipcRenderer.invoke('eggs:get-assets'),
+  getDigitAssets: () => ipcRenderer.invoke('digits:get-assets'),
 
   // emotes (own file, separate from config — see README)
   getEmotes: () => ipcRenderer.invoke('emotes:get'),
@@ -17,8 +21,11 @@ contextBridge.exposeInMainWorld('onigiri', {
   reloadEmotes: () => ipcRenderer.invoke('emotes:reload'),
   getEmotesPath: () => ipcRenderer.invoke('emotes:path'),
 
+  // quotes (own JSON file, same idea as the emotes file)
+  getQuotes: () => ipcRenderer.invoke('quotes:get'),
+
   // room
-  hostRoom: (username, playlistUrls = []) => ipcRenderer.invoke('room:host', { username, playlistUrls }),
+  hostRoom: (username) => ipcRenderer.invoke('room:host', { username }),
   joinRoom: (code, username) => ipcRenderer.invoke('room:join', { code, username }),
   leaveRoom: () => ipcRenderer.invoke('room:leave'),
   getRole: () => ipcRenderer.invoke('room:role'),
@@ -27,6 +34,8 @@ contextBridge.exposeInMainWorld('onigiri', {
   // video
   downloadVideo: (url) => ipcRenderer.invoke('video:download', { url }),
   cancelDownload: (url) => ipcRenderer.invoke('video:cancel-download', { url }),
+  getSubtitleTracks: (filePath) => ipcRenderer.invoke('video:subtitle-tracks', { filePath }),
+  extractSubtitle: (filePath, trackId) => ipcRenderer.invoke('video:extract-subtitle', { filePath, trackId }),
   chooseLocalVideo: () => ipcRenderer.invoke('video:choose-local'),
   uploadVideo: (filePath) => ipcRenderer.invoke('video:upload', { filePath }),
   watchStart: (url) => ipcRenderer.invoke('watch:start', { url }),

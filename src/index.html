@@ -24,6 +24,9 @@
       </div>
       <div class="top-bar-status">
         <button id="room-chip" class="chip" title="Copy room code" hidden></button>
+        <!-- Same chip in the girls style: one girl sprite per code
+             character. Set by setRoomChip. -->
+        <button id="room-chip-sprite" class="room-chip-sprite" title="Copy room code" hidden></button>
         <button id="leave-room-btn" class="icon-btn" title="Leave room" hidden aria-label="Leave room">
           <svg viewBox="0 0 24 24">
             <path
@@ -56,6 +59,9 @@
            (that was the source of the phantom scrollbars). -->
         <div class="setup-decor" aria-hidden="true">
           <div id="setup-bg" class="setup-bg" hidden></div>
+          <!-- Easter-egg mascot: replaces the spinning cookie when the
+               council eggs are on (one random pick per launch). -->
+          <img id="setup-cookie-img" class="setup-cookie-img" alt="" hidden>
           <svg id="setup-cookie" class="setup-cookie" viewBox="0 0 380 380" fill="none"
             xmlns="http://www.w3.org/2000/svg">
             <defs>
@@ -111,17 +117,6 @@
               <input type="text" id="host-username" required autocomplete="off">
             </label>
 
-            <!-- Playlist builder: links added here become the room's starting
-                 queue, in exactly the order added — first at the top. -->
-            <div class="field">
-              <div id="playlist-rows" class="playlist-rows"></div>
-              <div class="playlist-add-row">
-                <input type="text" id="playlist-url-input" placeholder="Link" autocomplete="off">
-                <button type="button" id="playlist-add-btn" class="playlist-add-btn" title="Add to playlist" aria-label="Add to playlist">
-                  <svg viewBox="0 0 24 24"><path d="M19 13H13v6h-2v-6H5v-2h6V5h2v6h6v2Z" /></svg>
-                </button>
-              </div>
-            </div>
             <button type="submit" class="btn btn-filled">Create room</button>
           </form>
 
@@ -134,12 +129,15 @@
             </label>
             <label class="field">
               <span>Room code</span>
-              <input type="text" id="join-code" placeholder="ABC123" maxlength="6"
+              <input type="text" id="join-code" inputmode="numeric" pattern="[0-9]*" placeholder="123456" maxlength="6"
                 style="text-transform:uppercase; letter-spacing:2px;" required>
             </label>
-            <button type="submit" class="btn btn-tonal">Join room</button>
+            <button type="submit" class="btn btn-filled">Join room</button>
           </form>
         </div>
+
+        <!-- Council egg: a quiet quote in the bottom-left of the home screen. -->
+        <div id="quote-line" class="quote-line" hidden></div>
       </section>
 
       <!-- ============================== ROOM ============================== -->
@@ -163,6 +161,14 @@
                 <div id="player-seek-marker" class="player-seek-marker" aria-hidden="true"></div>
               </div>
               <span id="player-time-duration" class="player-time">0:00</span>
+              <!-- Captions: hidden entirely unless the loaded video has
+                   embedded subtitle tracks (renderer reveals it after
+                   probing the file with ffprobe). -->
+              <button id="cc-btn" class="icon-btn cc-btn" title="Captions" aria-label="Toggle captions" hidden>
+                <svg viewBox="0 0 24 24">
+                  <path d="M19 4H5c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2Zm-8 7H9.5v-.5h-2v3h2V13H11v1c0 .55-.45 1-1 1H7c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1h3c.55 0 1 .45 1 1v1Zm7 0h-1.5v-.5h-2v3h2V13H18v1c0 .55-.45 1-1 1h-3c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1h3c.55 0 1 .45 1 1v1Z" />
+                </svg>
+              </button>
               <div id="volume-ring" class="volume-ring" title="Mute or scroll to change volume" role="button" tabindex="0"
                 aria-label="Mute">
                 <svg id="volume-icon" viewBox="0 0 24 24">
@@ -175,6 +181,9 @@
               </div>
             </div>
             <div id="video-empty" class="video-empty">
+              <!-- Shiggy bounces here when nothing is playing and the
+                   council eggs are on; otherwise the plain play icon. -->
+              <img class="video-empty-egg" src="../build/shiggy.webp" alt="" aria-hidden="true">
               <svg viewBox="0 0 24 24" class="video-empty-icon">
                 <path d="M8 5v14l11-7Z" />
               </svg>
@@ -242,6 +251,9 @@
             <button type="button" class="settings-nav-item" data-panel="connection">Connection</button>
             <button type="button" class="settings-nav-item" data-panel="emotes">Emotes</button>
             <button type="button" class="settings-nav-item" data-panel="about">About</button>
+            <!-- Extras: hidden until the About tagline is clicked
+                 11 times (easter egg, v1.6). -->
+            <button type="button" class="settings-nav-item settings-nav-item--council" data-panel="council" hidden>Extras</button>
           </div>
 
           <div class="settings-panels">
@@ -265,16 +277,30 @@
               </div>
 
               <h3 class="panel-subheading">Background</h3>
-              <label class="field">
-                <span>Image URL</span>
-                <input type="text" id="setting-background-url"
-                  placeholder="https://link-to-image — leave blank for none">
-              </label>
+              <div class="field">
+                <span>Image</span>
+                <div class="field-row">
+                  <input type="text" id="setting-background-file" readonly placeholder="No image picked">
+                  <button type="button" id="background-browse-btn" class="btn btn-outlined btn-small">Browse…</button>
+                  <button type="button" id="background-clear-btn" class="btn btn-text btn-small">Clear</button>
+                </div>
+              </div>
 
               <label class="field">
                 <span>Blur — <span id="blur-amount-label">24px</span></span>
                 <input type="range" id="setting-blur-amount" min="0" max="50" value="24">
               </label>
+
+              <div class="field">
+                <div class="switch-row">
+                  <span>Match theme to background</span>
+                  <label class="md-switch">
+                    <input type="checkbox" id="setting-bg-theming" role="switch">
+                    <span class="md-switch-track"><span class="md-switch-thumb"></span></span>
+                  </label>
+                </div>
+                <span class="field-hint">Colors are pulled from the image, matugen-style, and follow dark/light mode.</span>
+              </div>
 
               <div class="field">
                 <div class="switch-row">
@@ -335,7 +361,6 @@
                   <option value="4d">4d</option>
                   <option value="7d">7d</option>
                 </select>
-                <span class="field-hint">“After watching” deletes a video when it finishes playing. Timed options count from when the download finished — minimum 5h, maximum 7d.</span>
               </label>
               <div class="field-row">
                 <button type="button" id="run-setup-check-btn" class="btn btn-outlined btn-small">Run setup check</button>
@@ -411,7 +436,7 @@
                 <img class="about-avatar" src="assets/fal.png" alt="fal1109's avatar">
                 <div class="about-info">
                   <div class="about-name">fal1109</div>
-                  <button type="button" id="about-tagline" class="about-tagline">for the onigiri boomer's council</button>
+                  <button type="button" id="about-tagline" class="about-tagline">for the onigiri extras</button>
                   <a class="about-site" href="https://fa11.netlify.app" target="_blank" rel="noopener">fa11.netlify.app</a>
                 </div>
                 <a class="about-github" href="https://github.com/fal1109" target="_blank" rel="noopener" title="github.com/fal1109">
@@ -426,9 +451,9 @@
                 <div class="about-credit-head">
                   <img class="about-credit-img about-credit-img--light" src="../build/catbox.png" alt="">
                   <img class="about-credit-img about-credit-img--dark" src="../build/catbox_darkmode.png" alt="">
-                  <span class="about-credit-line">video hosting platform <a href="https://litterbox.catbox.moe/" class="about-credit-link">litterbox.catbox.moe</a></span>
+                  <span class="about-credit-line">video hosting platform</span>
                 </div>
-                <span class="about-credit-note">catbox.moe is not affiliated with onigiri</span>
+                <span class="about-credit-note"><a href="https://catbox.moe/" class="about-credit-link">catbox.moe</a> is not affiliated with onigiri</span>
               </div>
 
               <h3 class="panel-subheading">Version</h3>
@@ -438,6 +463,69 @@
                   <span id="update-status" class="about-update-status" aria-live="polite"></span>
                   <button type="button" id="check-updates-btn" class="btn btn-outlined btn-small">Check for updates</button>
                 </div>
+              </div>
+            </div>
+
+            <!-- Stub panel — designs/resources pending; fill in later. -->
+            <div class="settings-panel" data-panel="council" hidden>
+              <div class="field">
+                <div class="switch-row">                      <span>Enable extras</span>
+                  <label class="md-switch">
+                    <input type="checkbox" id="setting-eggs-enabled" role="switch">
+                    <span class="md-switch-track"><span class="md-switch-thumb"></span></span>
+                  </label>
+                </div>
+              </div>
+              <div class="field">
+                <span>Room code chip</span>
+                <div class="segmented" id="room-code-style-toggle">
+                  <button type="button" data-code-style-value="plain">Plain</button>
+                  <button type="button" data-code-style-value="girls">Girls</button>
+                </div>
+                <span class="field-hint">"Girls" shows pixel girls holding your room code digits.</span>
+              </div>
+              <div class="field">
+                <span>Home screen mascot</span>
+                <div class="segmented" id="mascot-style-toggle"></div>
+              </div>
+              <div class="field">
+                <div class="switch-row">
+                  <span>Show mascot over background image</span>
+                  <label class="md-switch">
+                    <input type="checkbox" id="setting-mascot-over-bg" role="switch">
+                    <span class="md-switch-track"><span class="md-switch-thumb"></span></span>
+                  </label>
+                </div>
+              </div>
+              <div id="eggs-feature-list">
+                <div class="field">
+                  <div class="switch-row">
+                    <span>Greeting sound when the app opens</span>
+                    <label class="md-switch">
+                      <input type="checkbox" id="setting-egg-openingSound" role="switch">
+                      <span class="md-switch-track"><span class="md-switch-thumb"></span></span>
+                    </label>
+                  </div>
+                </div>
+                <div class="field">
+                  <div class="switch-row">
+                    <span>Quote on the home screen</span>
+                    <label class="md-switch">
+                      <input type="checkbox" id="setting-egg-quotes" role="switch">
+                      <span class="md-switch-track"><span class="md-switch-thumb"></span></span>
+                    </label>
+                  </div>
+                </div>
+                <div class="field">
+                  <div class="switch-row">
+                    <span>Shiggy when nothing is playing</span>
+                    <label class="md-switch">
+                      <input type="checkbox" id="setting-egg-shiggy" role="switch">
+                      <span class="md-switch-track"><span class="md-switch-thumb"></span></span>
+                    </label>
+                  </div>
+                </div>
+
               </div>
             </div>
 
@@ -459,6 +547,26 @@
         <div class="dialog-actions">
           <button type="button" id="health-rerun" class="btn btn-text">Check again</button>
           <button type="button" id="health-done" class="btn btn-filled">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========================== LAUNCH SPLASH =========================== -->
+    <!-- Shown the moment the app opens: the onigiri logo pops in on a solid
+         themed background, then the whole sheet sweeps off toward the
+         bottom-right corner — its 45° edge traveling from the top-left
+         corner down to the bottom-right one. renderer.js (runLaunchSplash)
+         times the reveal and hides this layer when the sweep ends; a CSS
+         failsafe hides it anyway if the renderer ever fails to run. -->
+    <div id="launch-splash" class="launch-splash" aria-hidden="true">
+      <!-- Solid skewed surface whose top edge IS the 45° wipe diagonal. -->
+      <div class="launch-splash-sheet"></div>
+      <!-- Brand rides the sweep from outside the sheet, so it never gets
+           sheared by the skew. -->
+      <div class="launch-splash-brand">
+        <div class="launch-splash-brand-inner">
+          <img class="launch-splash-logo" src="assets/icon.png" alt="">
+          <span class="launch-splash-name">onigiri</span>
         </div>
       </div>
     </div>

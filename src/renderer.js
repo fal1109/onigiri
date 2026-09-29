@@ -64,11 +64,17 @@ const progressByUrl = new Map(); // url -> latest percent from yt-dlp
 const predownloadedPaths = new Map(); // url -> local file path, ready to use instantly
 const predownloadingUrls = new Set();
 const failedPrefetchUrls = new Set(); // urls that already failed a background prefetch — skipped, not retried in a loop
-// Host's pre-room playlist (setup screen). Order is the queue order — first
-// link added becomes the first thing everyone watches.
-const playlistEntries = [];
 let activeUploadPath = null; // file currently uploading to litterbox
 let isCurrentItemLocal = false; // player is showing a user-picked local file instead of the download
+// Captions: tracks probed from the loaded file via ffprobe. The CC button
+// only exists while captionTracks is non-empty (no captions → no button).
+let captionTracks = [];
+let captionTrackIndex = -1; // -1 = off
+let captionTrackEl = null; // the <track> element currently attached to the player
+let currentLocalVideoPath = null; // file backing the player right now
+const captionTempUrls = new Map(); // trackId -> blob: URL of extracted WebVTT
+let captionProbeToken = 0;
+let captionApplyToken = 0;
 let roomQueue = [];
 let roomQueueIndex = -1;
 let typingUsers = new Set();
@@ -77,6 +83,7 @@ let djUsernames = [];
 let lastParticipants = [];
 
 // emoji tray keyboard navigation state (Ctrl+E to open, Tab to cycle)
+let councilClicks = 0;
 let trayOpen = false;
 let trayButtons = [];
 let traySelectedIndex = 0;
@@ -84,6 +91,307 @@ let traySelectedIndex = 0;
 const $ = (sel) => document.querySelector(sel);
 const allEmotes = () => [...BUILTIN_EMOTES, ...customEmotes];
 const hasControlPermission = () => amIHost || djUsernames.includes(username);
+
+// Person glyph dropped inside the colored dot for participants without an
+// avatar image — gives the dim/bright download state something to read on.
+const PERSON_GLYPH = '<svg class="participant-dot-glyph" viewBox="0 0 24 24"><path d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4Zm0 2c-3.3 0-8 1.7-8 5v1h16v-1c0-3.3-4.7-5-8-5Z"/></svg>';
+
+// A video that hasn't finished downloading means the room isn't ready to
+// watch — everyone's icon dims until it is (hover lightens it back up).
+const isAnyVideoPendingDownload = () => downloadingUrls.size > 0 || predownloadingUrls.size > 0;
+function refreshParticipantDimming() {
+  const dim = isAnyVideoPendingDownload();
+  document.querySelectorAll('#top-participants .participant-chip').forEach((chip) => {
+    chip.classList.toggle('is-buffering', dim);
+  });
+}
+
+// ------------------------------- extras easter eggs -------------------------
+// One config object gates everything: easterEggs.enabled is the master
+// switch; each feature flag defaults to on when unset. Egg assets (mascot
+// pngs, greeting sounds) are packed inside the asar, so the main process
+// hands us file:// listings once at startup; the mascot and greeting are
+// picked randomly per launch and then stick for the whole session.
+const EGG_FEATURES = ['openingSound', 'quotes', 'shiggy'];
+// A mascot SET is a character: build/mascots/<id>/ paired with
+// build/sounds/<id>/, so the same character greets you with their own
+// voice. The legacy flat closet sticker pile is retired from the picker.
+// 'random' isn't a real set — it re-rolls the character every launch (and
+// every asset reload, e.g. Ctrl+R), so it needs its own branch rather than
+// mapping to a folder like a real set id would.
+const MASCOT_RANDOM = 'random';
+const mascotStyle = () => {
+  if (config.mascotStyle === 'cookie') return 'cookie';
+  if (config.mascotStyle === MASCOT_RANDOM) return MASCOT_RANDOM;
+  // An unknown saved id ('weeb'/'closet', or a deleted set folder) falls
+  // back to the first set found on disk; with no sets at all, the cookie.
+  if (config.mascotStyle && mascotSets[config.mascotStyle]) return config.mascotStyle;
+  return mascotOrder[0] || 'cookie';
+};
+const roomCodeStyle = () => (config.roomCodeStyle === 'girls' ? 'girls' : 'plain');
+
+const eggFlags = () => ({
+  enabled: true, openingSound: true, quotes: true, shiggy: true,
+  ...(config.easterEggs || {})
+});
+let mascotSets = {};      // set id -> { images, sounds } (character folders)
+let mascotOrder = [];     // set ids in stable order, for the picker
+let eggMascotUrl = null;  // chosen once per launch
+// What the decor corner is actually showing: 'cookie', 'random' (a rolled
+// character), or a real set id. 'random' and real ids are visually the same
+// (a character) — only 'cookie' may ever show the cookie.
+let mascotStyleMode = 'cookie';
+let eggSoundUrl = null;   // chosen once per launch
+let eggQuote = null;       // chosen once per launch
+let customQuotes = [];     // loaded from the hand-editable quotes JSON
+let digitSprites = {};     // digit-0..9.png urls for the girls room-code chip
+
+const QUOTES = [
+  { text: 'imagine showering, cant be me', by: 'rui' }
+];
+
+// Quotes live in their own plain JSON file (like the emotes file) so the
+// council can add/edit/remove them without touching the app:
+//   [{ "text": "…", "by": "rui" }, …]
+// Falls back to the built-in list above when the file is missing/empty.
+function quotePool() {
+  return customQuotes.length ? customQuotes : QUOTES;
+}
+
+const pick = (arr) => (arr.length ? arr[Math.floor(Math.random() * arr.length)] : null);
+
+async function loadEggAssets() {
+  try {
+    const assets = await window.onigiri.getEggAssets();
+    mascotSets = assets.sets || {};
+    mascotOrder = Object.keys(mascotSets).sort();
+  } catch { /* eggs are optional — degrade quietly */ }
+  try {
+    const digitAssets = await window.onigiri.getDigitAssets();
+    digitSprites = digitAssets.digits || {};
+  } catch { /* girls chip just falls back to plain text */ }
+  // A saved id whose folder disappeared (or the legacy 'closet'/'weeb')
+  // gets persisted as the first set actually on disk.
+  let resolved = mascotStyle();
+  if (resolved === MASCOT_RANDOM && !mascotOrder.length) resolved = 'cookie'; // nothing to roll between
+  if (resolved !== 'cookie' && resolved !== MASCOT_RANDOM && !mascotSets[resolved]) {
+    resolved = mascotOrder[0] || 'cookie';
+    try { config = await window.onigiri.setConfig({ mascotStyle: resolved }); } catch {}
+  }
+  // The set IS the character: image and sound both come from it, so the
+  // opening greeting sounds like the mascot on screen is saying it.
+  // 'random' rolls across the real character sets every launch/reload — the
+  // cookie is its own explicit picker option and is never part of the roll.
+  const set = resolved === 'cookie'
+    ? null
+    : resolved === MASCOT_RANDOM
+      ? mascotSets[pick(mascotOrder)]
+      : mascotSets[resolved];
+  mascotStyleMode = set ? resolved : 'cookie';
+  eggMascotUrl = set ? pick(set.images) : null;
+  renderRoomChip();
+  // Rotate greetings: never repeat the sound from the previous launch, so
+  // every one of them gets heard over time instead of the same lucky pick.
+  const pool = set ? set.sounds : [];
+  const fresh = pool.filter((s) => s !== config.lastOpeningSound);
+  eggSoundUrl = pick(fresh.length ? fresh : pool);
+  if (eggSoundUrl && eggSoundUrl !== config.lastOpeningSound) {
+    try { config = await window.onigiri.setConfig({ lastOpeningSound: eggSoundUrl }); } catch {}
+  }
+  syncEggSettings(); // populates the mascot picker from the discovered sets
+  applyEasterEggs();
+  // The greeting belongs to the app opening, not to joining a room.
+  playOpeningSound();
+}
+
+// Pull the hand-editable quotes file in; the picker re-rolls so an edit
+// shows up next launch (or instantly via the reload button in settings).
+async function loadQuotes() {
+  try {
+    const list = await window.onigiri.getQuotes();
+    if (Array.isArray(list)) {
+      customQuotes = list
+        .filter((q) => q && typeof q.text === 'string' && q.text.trim())
+        .map((q) => ({ text: String(q.text), by: String(q.by || 'onigiri') }));
+      eggQuote = null; // re-roll from the fresh pool
+      applyQuoteEgg();
+    }
+  } catch { /* quotes are optional — the built-in one covers this */ }
+}
+
+// Decor corner of the setup screen. Which mascot shows depends on the
+// mascotStyle choice:
+//   <set id> — one random image from that character's folder, static
+//   'random' — same, but the character itself is re-rolled per launch
+//   'cookie' — the original spinning onigiri cookie
+// A background image wins unless "show mascot over background" is on.
+function applySetupDecorEggs() {
+  const cookie = $('#setup-cookie');
+  const mascot = $('#setup-cookie-img');
+  const egg = eggFlags();
+  if (bgActive() && !(egg.enabled && config.mascotOverBackground)) {
+    cookie.setAttribute('hidden', '');
+    mascot.hidden = true;
+    return;
+  }
+  // A character (specific or random-rolled) is wanted unless the choice is
+  // literally the cookie. eggMascotUrl can be briefly null while assets
+  // load — that shows an empty corner for a beat rather than flashing the
+  // cookie, so the cookie only ever appears when Cookie is the real pick.
+  const wantMascot = egg.enabled && mascotStyleMode !== 'cookie';
+  if (wantMascot && eggMascotUrl) {
+    cookie.setAttribute('hidden', '');
+    if (mascot.getAttribute('src') !== eggMascotUrl) mascot.setAttribute('src', eggMascotUrl);
+    mascot.hidden = false;
+  } else {
+    mascot.hidden = true;
+    cookie.removeAttribute('hidden');
+  }
+}
+
+function applyQuoteEgg() {
+  const line = $('#quote-line');
+  const egg = eggFlags();
+  if (!egg.enabled || !egg.quotes) { line.hidden = true; return; }
+  if (!eggQuote) eggQuote = pick(quotePool());
+  line.textContent = eggQuote ? `${eggQuote.text} -${eggQuote.by}` : '';
+  line.hidden = !eggQuote;
+}
+
+function applyShiggyEgg() {
+  $('#video-empty').classList.toggle('has-egg', eggFlags().enabled && eggFlags().shiggy);
+}
+
+// Launch splash: the onigiri logo pops in on a solid, slightly-different
+// shade of the themed background, holds for a beat, then the whole sheet
+// sweeps off toward the bottom-right corner (its 45° edge traveling from the
+// top-left corner down to the bottom-right one) and the layer unmounts. Kept
+// entirely theme/CSS-driven so custom themes recolor it for free.
+const LAUNCH_SPLASH_HOLD_MS = 900;  // logo visible before the sweep starts
+const LAUNCH_SPLASH_SWEEP_MS = 650; // must match the CSS sweep transition
+function runLaunchSplash() {
+  const splash = document.getElementById('launch-splash');
+  if (!splash) return;
+  // Wipe once the brand has settled. Prefers visibilitychange over load —
+  // style/layout is ready long before images/fonts finish, and the sweep
+  // starting the moment the window appears reads better than a fixed delay
+  // that can race slow first paint.
+  const start = () => setTimeout(() => {
+    splash.classList.add('is-wiping');
+    setTimeout(() => splash.remove(), LAUNCH_SPLASH_SWEEP_MS + 80);
+  }, LAUNCH_SPLASH_HOLD_MS);
+  if (document.visibilityState === 'visible') start();
+  else document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') start();
+  }, { once: true });
+}
+
+// Greeting sound — fires once, when the app opens (from loadEggAssets).
+
+function playOpeningSound() {
+  const egg = eggFlags();
+  if (!egg.enabled || !egg.openingSound || !eggSoundUrl) return;
+  try {
+    const audio = new Audio(eggSoundUrl);
+    audio.volume = 0.5; // subtle — half volume, it's just a greeting
+    audio.play().catch(() => {});
+  } catch { /* autoplay blocks are non-fatal */ }
+}
+
+// Re-apply every egg after a settings change or asset load.
+function applyEasterEggs() {
+  applySetupDecorEggs();
+  applyQuoteEgg();
+  applyShiggyEgg();
+}
+
+function syncEggSettings() {
+  const egg = eggFlags();
+  $('#setting-eggs-enabled').checked = !!egg.enabled;
+  $('#eggs-feature-list').hidden = !egg.enabled;
+  for (const key of EGG_FEATURES) {
+    const box = $(`#setting-egg-${key}`);
+    if (box) box.checked = egg[key] !== false;
+  }
+  // Mascot picker: one button per discovered set + Cookie — built from the
+  // folders on disk, so future character sets appear with no code change.
+  // Random leads the row (only when there's something to be random between).
+  const toggle = $('#mascot-style-toggle');
+  toggle.innerHTML = '';
+  if (mascotOrder.length) {
+    const randomBtn = document.createElement('button');
+    randomBtn.type = 'button';
+    randomBtn.dataset.mascotValue = MASCOT_RANDOM;
+    randomBtn.textContent = 'Random';
+    toggle.appendChild(randomBtn);
+  }
+  for (const id of mascotOrder) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.dataset.mascotValue = id;
+    btn.textContent = id.charAt(0).toUpperCase() + id.slice(1);
+    toggle.appendChild(btn);
+  }
+  const cookieBtn = document.createElement('button');
+  cookieBtn.type = 'button';
+  cookieBtn.dataset.mascotValue = 'cookie';
+  cookieBtn.textContent = 'Cookie';
+  toggle.appendChild(cookieBtn);
+  const style = mascotStyle();
+  toggle.querySelectorAll('button').forEach((btn) => {
+    btn.classList.toggle('is-active', btn.dataset.mascotValue === style);
+  });
+  // Room-code chip picker (plain pill / sprite girls).
+  $('#room-code-style-toggle').querySelectorAll('button').forEach((btn) => {
+    btn.classList.toggle('is-active', btn.dataset.codeStyleValue === roomCodeStyle());
+  });
+  $('#setting-mascot-over-bg').checked = !!config.mascotOverBackground;
+}
+
+function wireEggSettings() {
+  $('#setting-eggs-enabled').addEventListener('change', async (e) => {
+    await window.onigiri.setConfig({ easterEggs: { ...eggFlags(), enabled: e.target.checked } });
+    config = await window.onigiri.getConfig();
+    syncEggSettings();
+    applyEasterEggs();
+  });
+  $('#setting-mascot-over-bg').addEventListener('change', async (e) => {
+    config = await window.onigiri.setConfig({ mascotOverBackground: e.target.checked });
+    applyEasterEggs();
+  });
+  $('#mascot-style-toggle').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-mascot-value]');
+    if (!btn) return;
+    config = await window.onigiri.setConfig({ mascotStyle: btn.dataset.mascotValue });
+    // Switching sets re-rolls the mascot from the new character right away,
+    // so the home screen updates instantly. The greeting itself is a launch
+    // event — the next opening picks a voice line from the new set. Random
+    // re-rolls across the real characters here too, never the cookie.
+    const style = mascotStyle();
+    const setId = style === 'cookie' ? null : style === MASCOT_RANDOM ? pick(mascotOrder) : style;
+    const set = setId ? mascotSets[setId] : null;
+    mascotStyleMode = set ? style : 'cookie';
+    eggMascotUrl = set ? pick(set.images) : null;
+    syncEggSettings();
+    applyEasterEggs();
+  });
+  $('#room-code-style-toggle').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-code-style-value]');
+    if (!btn) return;
+    config = await window.onigiri.setConfig({ roomCodeStyle: btn.dataset.codeStyleValue });
+    syncEggSettings();
+    renderRoomChip();
+  });
+  for (const key of EGG_FEATURES) {
+    const box = $(`#setting-egg-${key}`);
+    if (!box) continue;
+    box.addEventListener('change', async (e) => {
+      await window.onigiri.setConfig({ easterEggs: { ...eggFlags(), [key]: e.target.checked } });
+      config = await window.onigiri.getConfig();
+      applyEasterEggs();
+    });
+  }
+}
 
 // ---------------------------------------------------------------------- init
 (async function init() {
@@ -93,17 +401,21 @@ const hasControlPermission = () => amIHost || djUsernames.includes(username);
   $('#join-username').value = config.username;
 
   applyAppearance();
+  runLaunchSplash();
   buildEmojiTray();
   wireSetup();
-  wirePlaylistBuilder();
   wireRoom();
   wireChat();
+  wireCaptions();
   wireSettings();
   wireAppearance();
   wireNetworkEvents();
   wireHealthCheck();
   wireAboutLinks();
   wireAboutVersion();
+  wireEggSettings();
+  loadEggAssets();
+  loadQuotes();
   refreshConfigNotice();
 
   // Probe the download stack quietly; only surface the checklist when
@@ -158,6 +470,33 @@ function hslToHex(h, s, l) {
   }
   const toHex = (x) => Math.round(x * 255).toString(16).padStart(2, '0');
   return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+// Matugen-style tokens derived from an image palette instead of a single
+// seed. The accent/secondary/tertiary hexes come from main.js's histogram;
+// every surface, container, and outline is regenerated through the same
+// HSL generator the preset themes use, so it follows dark/light mode.
+function buildImageThemeTokens(palette, mode) {
+  const tokens = {};
+  const dark = mode !== 'light';
+  for (const [key, hex] of [['--md-primary', palette.accent], ['--md-secondary', palette.secondary], ['--md-tertiary', palette.tertiary]]) {
+    const seed = buildThemeTokens(hex, dark ? 'dark' : 'light');
+    tokens[key] = seed[key];
+    tokens[key === '--md-primary' ? '--md-on-primary' : `--md-on-${key.slice(5)}`] = seed[`--md-on-${key.slice(5)}`];
+    tokens[`--md-${key.slice(5)}-container`] = seed[`--md-${key.slice(5)}-container`];
+    tokens[`--md-on-${key.slice(5)}-container`] = seed[`--md-on-${key.slice(5)}-container`];
+  }
+  // Surfaces tint toward the accent hue (the palette's dominant character),
+  // so the whole app shifts with the image rather than just the buttons.
+  const [hue] = hexToHsl(palette.accent);
+  const surface = buildThemeTokens(hslToHex(hue, 30, dark ? 40 : 70), mode);
+  for (const k of ['--nori', '--md-surface', '--md-surface-dim', '--md-surface-bright',
+    '--md-surface-container-lowest', '--md-surface-container-low', '--md-surface-container',
+    '--md-surface-container-high', '--md-surface-container-highest',
+    '--md-on-surface', '--md-on-surface-variant', '--md-outline', '--md-outline-variant']) {
+    tokens[k] = surface[k];
+  }
+  return tokens;
 }
 
 function buildThemeTokens(seedHex, mode) {
@@ -253,38 +592,44 @@ const PRESET_NAMES = {
 };
 
 // config.customTheme is either: null (no theme, pure CSS defaults), a seed
-// hex string (a preset — regenerated per current dark/light mode), or a
-// full {--token: value} object (an imported theme JSON, fixed regardless
-// of mode, since hand-authored files only cover accent tokens).
+// hex string (a preset — regenerated per current dark/light mode), a full
+// {--token: value} object (an imported theme JSON, fixed regardless of mode,
+// since hand-authored files only cover accent tokens), or { fromBackground:
+// …palette } — derived from the background image (feature 2), also
+// regenerated per mode.
 function applyCustomTheme(theme) {
   const root = document.documentElement;
   THEME_KEYS.forEach((k) => root.style.removeProperty(k));
   if (!theme) return;
+  const mode = config.themeMode === 'light' ? 'light' : 'dark';
   const tokens = typeof theme === 'string'
-    ? buildThemeTokens(theme, config.themeMode === 'light' ? 'light' : 'dark')
-    : theme;
+    ? buildThemeTokens(theme, mode)
+    : theme && theme.fromBackground
+      ? buildImageThemeTokens(theme.fromBackground, mode)
+      : theme;
   Object.entries(tokens).forEach(([k, v]) => { if (v) root.style.setProperty(k, v); });
 }
+
+// A background shows when a local file is picked and not switched off.
+const bgActive = () => !!(config.backgroundFile && config.backgroundEnabled !== false);
 
 function applyAppearance() {
   document.documentElement.dataset.theme = config.themeMode || 'dark';
   applyCustomTheme(config.customTheme);
 
   const bg = $('#setup-bg');
-  const cookie = $('#setup-cookie');
   // cookie is an <svg> element — SVGElement doesn't reliably support the
   // .hidden IDL property the way HTMLElement does, so setting it directly
   // can silently no-op. setAttribute/removeAttribute always works.
-  // backgroundEnabled (Material switch) toggles the image without wiping the URL.
-  if (config.backgroundUrl && config.backgroundEnabled !== false) {
-    bg.style.backgroundImage = `url("${config.backgroundUrl}")`;
+  // backgroundEnabled (Material switch) toggles the image without wiping the file.
+  if (bgActive()) {
+    bg.style.backgroundImage = `url("${config.backgroundFile}")`;
     bg.style.filter = `blur(${config.backgroundBlur ?? 24}px)`;
     bg.hidden = false;
-    cookie.setAttribute('hidden', '');
   } else {
     bg.hidden = true;
-    cookie.removeAttribute('hidden');
   }
+  applySetupDecorEggs();
   setBackgroundTransform(0, 0);
 }
 
@@ -295,7 +640,7 @@ function setBackgroundTransform(x, y) {
 }
 
 function handleParallaxMouseMove(e) {
-  if (!config.backgroundParallax || !config.backgroundUrl || config.backgroundEnabled === false || $('#setup-view').hidden) return;
+  if (!config.backgroundParallax || !bgActive() || $('#setup-view').hidden) return;
   const x = (e.clientX / window.innerWidth - 0.5) * 30;
   const y = (e.clientY / window.innerHeight - 0.5) * 30;
   setBackgroundTransform(x, y);
@@ -401,21 +746,34 @@ function wireAppearance() {
   });
 
   // Live preview so the cookie/background swap (and blur) reflect what's
-  // typed immediately, rather than only after Save — that mismatch is what
+  // picked immediately, rather than only after Save — that mismatch is what
   // made the cookie look like it was wrongly showing "while" a background
   // was set, when really it just hadn't been saved yet.
-  $('#setting-background-url').addEventListener('input', (e) => {
-    const url = e.target.value.trim();
-    const bg = $('#setup-bg');
-    const cookie = $('#setup-cookie');
-    if (url) {
-      bg.style.backgroundImage = `url("${url}")`;
+  $('#background-browse-btn').addEventListener('click', async () => {
+    const btn = $('#background-browse-btn');
+    btn.disabled = true;
+    try {
+      const res = await window.onigiri.chooseBackgroundImage();
+      if (res.canceled) return;
+      if (!res.ok) { toast(res.error || "Couldn't open the file picker — type the path in manually instead."); return; }
+      $('#setting-background-file').value = res.url;
+      const bg = $('#setup-bg');
+      bg.style.backgroundImage = `url("${res.url}")`;
       bg.hidden = false;
-      cookie.setAttribute('hidden', '');
-    } else {
-      bg.hidden = true;
-      cookie.removeAttribute('hidden');
+      applySetupDecorEggs();
+    } catch (err) {
+      toast(err.message || "Couldn't open the file picker.");
+    } finally {
+      btn.disabled = false;
     }
+  });
+
+  $('#background-clear-btn').addEventListener('click', () => {
+    $('#setting-background-file').value = '';
+    const bg = $('#setup-bg');
+    bg.style.backgroundImage = '';
+    bg.hidden = true;
+    applySetupDecorEggs();
   });
 }
 
@@ -440,10 +798,7 @@ function wireSetup() {
     const submitBtn = e.target.querySelector('button[type="submit"]');
     submitBtn.disabled = true;
     await window.onigiri.setConfig({ username });
-    // Playlist order is preserved end-to-end: entries were appended as the
-    // host typed them, and the main process seeds the queue top-to-bottom.
-    const playlistUrls = playlistEntries.map((entry) => entry.url);
-    const res = await window.onigiri.hostRoom(username, playlistUrls);
+    const res = await window.onigiri.hostRoom(username);
     submitBtn.disabled = false;
     if (!res.ok) { toast(`Couldn't create room: ${res.error}`); return; }
     role = 'host';
@@ -451,6 +806,12 @@ function wireSetup() {
     enterRoom();
     setRoomChip(`Room code: ${res.code}`, res.code);
     toast(`Room created — share the code "${res.code}" with your friends`);
+  });
+
+  // Room codes are digits only — strip anything else as it's typed.
+  $('#join-code').addEventListener('input', (e) => {
+    const digits = e.target.value.replace(/\D+/g, '').slice(0, 6);
+    if (digits !== e.target.value) e.target.value = digits;
   });
 
   $('#join-form').addEventListener('submit', async (e) => {
@@ -470,54 +831,6 @@ function wireSetup() {
   });
 }
 
-// ------------------------------------------------- host playlist builder
-// Rows stay in the exact order they were added (plain array + append-only
-// DOM), because that order becomes the joiners' download/watch queue.
-function renderPlaylistRows() {
-  const wrap = $('#playlist-rows');
-  wrap.innerHTML = '';
-  playlistEntries.forEach((entry, idx) => {
-    const row = document.createElement('div');
-    row.className = 'playlist-row';
-    const order = document.createElement('span');
-    order.className = 'playlist-row-order';
-    order.textContent = `${idx + 1}.`;
-    const text = document.createElement('span');
-    text.className = 'playlist-row-url';
-    text.textContent = entry.name || entry.url;
-    text.title = entry.url;
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.className = 'playlist-row-remove';
-    remove.title = 'Remove from playlist';
-    remove.setAttribute('aria-label', `Remove ${entry.name || 'item'} from playlist`);
-    remove.textContent = '×';
-    remove.addEventListener('click', () => {
-      playlistEntries.splice(idx, 1);
-      renderPlaylistRows();
-    });
-    row.appendChild(order);
-    row.appendChild(text);
-    row.appendChild(remove);
-    wrap.appendChild(row);
-  });
-}
-
-function wirePlaylistBuilder() {
-  $('#playlist-add-btn').addEventListener('click', () => {
-    const input = $('#playlist-url-input');
-    const url = input.value.trim();
-    if (!url) return;
-    playlistEntries.push({ url, name: null });
-    input.value = '';
-    renderPlaylistRows();
-    input.focus();
-  });
-  $('#playlist-url-input').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); $('#playlist-add-btn').click(); }
-  });
-}
-
 function enterRoom() {
   $('#setup-view').hidden = true;
   $('#room-view').hidden = false;
@@ -529,20 +842,54 @@ function enterRoom() {
   refreshBarVisibility();
 }
 
+// The room-code chip. Two styles, picked by the "roomCodeStyle" config
+// (toggle lives in Settings → Extras): 'plain' is a rounded text pill,
+// "Room code: 123456" when hosting, "In room: 123456" when joining; 'girls'
+// spells the code in digit-sign sprites (one girl per code character;
+// redrawn whenever the assets load, the style flips, or a new code is set).
+// Click still copies the code in both styles.
+let currentChipCode = null;
+let currentChipText = '';
 function setRoomChip(text, code) {
-  const chip = $('#room-chip');
-  chip.textContent = text;
-  chip.hidden = false;
-  chip.onclick = async () => {
-    try {
-      await navigator.clipboard.writeText(code);
-      toast('Room code copied');
-    } catch {
-      toast(`Room code: ${code}`);
-    }
-  };
+  currentChipCode = code;
+  currentChipText = text;
+  renderRoomChip();
 }
-
+function renderRoomChip() {
+  const chip = $('#room-chip');
+  const spriteChip = $('#room-chip-sprite');
+  const girls = roomCodeStyle() === 'girls' && currentChipCode
+    && String(currentChipCode).split('').every((ch) => digitSprites[ch]);
+  chip.hidden = girls || !currentChipCode;
+  spriteChip.hidden = !girls;
+  if (!currentChipCode) return;
+  if (girls) {
+    spriteChip.title = `Copy room code ${currentChipCode}`;
+    spriteChip.innerHTML = '';
+    for (const ch of String(currentChipCode)) {
+      const img = document.createElement('img');
+      img.className = 'room-chip-digit';
+      img.alt = ch;
+      img.src = digitSprites[ch] || '';
+      img.draggable = false;
+      spriteChip.appendChild(img);
+    }
+  } else {
+    chip.textContent = currentChipText;
+    chip.title = `Copy room code ${currentChipCode}`;
+  }
+}
+async function copyRoomCode() {
+  if (!currentChipCode) return;
+  try {
+    await navigator.clipboard.writeText(currentChipCode);
+    toast('Room code copied');
+  } catch {
+    toast(`Room code: ${currentChipCode}`);
+  }
+}
+$('#room-chip').addEventListener('click', copyRoomCode);
+$('#room-chip-sprite').addEventListener('click', copyRoomCode);
 async function leaveRoom() {
   await window.onigiri.leaveRoom();
   role = null;
@@ -563,8 +910,6 @@ async function leaveRoom() {
   predownloadingUrls.clear();
   failedPrefetchUrls.clear();
   $('#top-participants').innerHTML = '';
-  playlistEntries.length = 0;
-  renderPlaylistRows();
   activeUploadPath = null;
   isCurrentItemLocal = false;
   $('#upload-video-btn').disabled = false;
@@ -574,6 +919,8 @@ async function leaveRoom() {
   video.removeAttribute('src');
   video.load();
   video.controls = false;
+  currentLocalVideoPath = null;
+  refreshCaptionTracks(null);
   $('#video-empty').querySelector('p').textContent = 'Add a video to start';
   $('#video-empty').style.display = 'flex';
 
@@ -583,6 +930,8 @@ async function leaveRoom() {
   closeChatInput();
   $('#queue-panel').hidden = true;
   $('#room-chip').hidden = true;
+  $('#room-chip-sprite').hidden = true;
+  currentChipCode = null;
   $('#leave-room-btn').hidden = true;
   $('#room-view').hidden = true;
   $('#setup-view').hidden = false;
@@ -759,6 +1108,7 @@ function wireRoom() {
   window.onigiri.onVideoProgress(({ percent, url }) => {
     if (!url) return;
     progressByUrl.set(url, percent);
+    refreshParticipantDimming(); // download state changed → icon brightness
     // Update this video's own bar in place if it's rendered; otherwise
     // (re)render the list so a just-started download grows its bar.
     for (const el of document.querySelectorAll('.queue-item-progress')) {
@@ -1066,6 +1416,92 @@ function setLocalVideo(filePath) {
   setTimeout(() => { suppressPlayerEvents = false; }, 300);
   $('#video-empty').querySelector('p').textContent = 'Add a video to start';
   $('#video-empty').style.display = 'none';
+  currentLocalVideoPath = filePath;
+  refreshCaptionTracks(filePath);
+}
+
+// ----------------------------------------------------------------- captions
+// Probes the loaded file for embedded subtitle tracks. Empty result → the CC
+// button stays hidden entirely (per spec: don't show it when there are no
+// captions). Runs after every video swap; the token guards against a slow
+// probe answering after the next video already loaded.
+async function refreshCaptionTracks(filePath) {
+  const token = ++captionProbeToken;
+  captionTracks = [];
+  captionTrackIndex = -1;
+  if (captionTrackEl) { captionTrackEl.remove(); captionTrackEl = null; }
+  updateCcButton();
+  if (!filePath) return;
+  try {
+    const tracks = await window.onigiri.getSubtitleTracks(filePath);
+    if (token !== captionProbeToken) return; // another video took over
+    captionTracks = Array.isArray(tracks) ? tracks : [];
+    updateCcButton();
+  } catch { /* ffprobe unavailable → no captions UI, downloads still work */ }
+}
+
+function updateCcButton() {
+  const btn = $('#cc-btn');
+  if (!captionTracks.length) {
+    btn.hidden = true;
+    return;
+  }
+  btn.hidden = false;
+  btn.classList.toggle('is-active', captionTrackIndex !== -1);
+  btn.title = captionTrackIndex === -1
+    ? 'Captions off'
+    : `Captions: ${captionTracks[captionTrackIndex].label}`;
+}
+
+// Cycles off → track 1 → track 2 → … → off on repeated clicks.
+async function cycleCaptionTrack() {
+  if (!captionTracks.length) return;
+  let next = captionTrackIndex + 1;
+  if (next >= captionTracks.length) next = -1;
+  await applyCaptionTrack(next);
+}
+
+async function applyCaptionTrack(index) {
+  const token = ++captionApplyToken;
+  const video = $('#player');
+  if (captionTrackEl) { captionTrackEl.remove(); captionTrackEl = null; }
+  captionTrackIndex = index;
+  if (index === -1 || !captionTracks[index]) {
+    updateCcButton();
+    return;
+  }
+  const track = captionTracks[index];
+  try {
+    // Extraction (ffmpeg → WebVTT temp file) is cached in the main process,
+    // so revisiting a track this session is instant.
+    let url = captionTempUrls.get(track.id);
+    if (!url) {
+      // Main process returns raw WebVTT text; a blob URL sidesteps
+      // Chromium's cross-origin restrictions on file:// subtitle loads.
+      const vttText = await window.onigiri.extractSubtitle(currentLocalVideoPath, track.id);
+      url = URL.createObjectURL(new Blob([vttText], { type: 'text/vtt' }));
+      captionTempUrls.set(track.id, url);
+    }
+    if (token !== captionApplyToken) return; // user kept cycling mid-extract
+    const el = document.createElement('track');
+    el.kind = 'subtitles';
+    el.label = track.label;
+    if (track.lang) el.srclang = track.lang;
+    el.src = url;
+    el.default = true;
+    video.appendChild(el);
+    captionTrackEl = el;
+  } catch (err) {
+    if (token === captionApplyToken) {
+      captionTrackIndex = -1;
+      toast(`Couldn't load captions: ${err.message}`);
+    }
+  }
+  updateCcButton();
+}
+
+function wireCaptions() {
+  $('#cc-btn').addEventListener('click', cycleCaptionTrack);
 }
 
 // Auto-delete bookkeeping: tell the main process which queue item is on
@@ -1166,10 +1602,29 @@ function wireNetworkEvents() {
   window.onigiri.onTypingStop(({ username: who }) => clearTyping(who));
 }
 
+// Unique-ish name colors: hsl(hue) from a string hash collides constantly
+// ("rui" and "fal" both landed on the same hue), so this mixes the name
+// through FNV-1a plus a murmur3-style avalanche finalizer — every input bit
+// spreads across all 32 output bits, which the old polynomial hash never did
+// for short names. Same name always gets the same color.
 function nameColor(name) {
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
-  return `hsl(${hash % 360}, 60%, 55%)`;
+  let hash = 0x811c9dc5; // FNV-1a offset basis
+  for (let i = 0; i < name.length; i++) {
+    hash ^= name.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0; // FNV prime
+  }
+  // murmur3 32-bit finalizer — full avalanche so short names spread too.
+  hash ^= hash >>> 16;
+  hash = Math.imul(hash, 0x85ebca6b) >>> 0;
+  hash ^= hash >>> 13;
+  hash = Math.imul(hash, 0xc2b2ae35) >>> 0;
+  hash = (hash ^ (hash >>> 16)) >>> 0; // >>> 0: ^ returns a SIGNED int32
+  // Hue from the whole hash, saturation/lightness from independent bits —
+  // so even two names that land near the same hue stay visually distinct.
+  const hue = hash % 360;
+  const sat = 45 + ((hash >>> 7) % 30);   // 45–75% — colorful but never neon
+  const lig = 60 + ((hash >>> 14) % 18);  // 60–78% — readable on the dark bubble
+  return `hsl(${hue}, ${sat}%, ${lig}%)`;
 }
 
 // Play/pause/seek/skip are gated to host/DJs — but only those, not volume
@@ -1320,7 +1775,7 @@ function renderParticipants(participants) {
     const isSelf = name === username;
     const isDj = djUsernames.includes(name);
     const hostCanToggle = amIHost && !isSelf;
-    chip.className = 'participant-chip' + (hostCanToggle ? ' is-host-controllable' : '');
+    chip.className = 'participant-chip' + (hostCanToggle ? ' is-host-controllable' : '') + (isAnyVideoPendingDownload() ? ' is-buffering' : '');
     chip.title = hostCanToggle ? `Click to ${isDj ? 'revoke' : 'grant'} DJ` : '';
 
     if (avatarUrl && looksLikeImageUrl(avatarUrl)) {
@@ -1333,6 +1788,7 @@ function renderParticipants(participants) {
       const dot = document.createElement('span');
       dot.className = 'participant-dot';
       dot.style.background = nameColor(name);
+      dot.innerHTML = PERSON_GLYPH; // icon placeholder so the state reads
       chip.appendChild(dot);
     }
 
@@ -1352,6 +1808,7 @@ function renderParticipants(participants) {
     }
     dock.appendChild(chip);
   });
+  refreshParticipantDimming();
 }
 
 function clearTyping(who) {
@@ -1500,6 +1957,9 @@ function wireChat() {
     input.value = '';
     clearTimeout(typingStopTimer);
     window.onigiri.sendTypingStop(username);
+    // Message sent — close the input right away. No more "press Space/Escape
+    // to get out"; the next Enter reopens it.
+    closeChatInput();
   });
 
   $('#chat-input').addEventListener('input', () => {
@@ -1565,6 +2025,7 @@ function makeEmojiButton({ name, url }) {
   btn.addEventListener('click', () => {
     window.onigiri.sendChat(username, url);
     closeEmojiTray();
+    closeChatInput(); // sent an emote → back to watching, same as typing one
   });
   return btn;
 }
@@ -1602,33 +2063,46 @@ function closeSettings() {
 }
 
 async function openSettings() {
-  config = await window.onigiri.getConfig();
-  customEmotes = await window.onigiri.getEmotes();
-  $('#setting-background-url').value = config.backgroundUrl;
-  $('#setting-blur-amount').value = config.backgroundBlur ?? 24;
-  syncRangeFill($('#setting-blur-amount'));
-  $('#blur-amount-label').textContent = `${config.backgroundBlur ?? 24}px`;
-  $('#setting-parallax').checked = config.backgroundParallax !== false;
-  refreshAppearanceButtons();
-  $('#setting-avatar-url').value = config.avatarUrl;
-  $('#setting-dir').value = config.downloadDir;
-  refreshQualityButtons();
-  refreshAutoDeleteButtons();
-  $('#setting-bg-enabled').checked = config.backgroundEnabled !== false;
-  $('#bg-switch-label').textContent = config.backgroundEnabled !== false ? 'Show background image' : 'Background image hidden';
-  $('#setting-webhook').value = config.webhookUrl;
-  $('#setting-supabase-url').value = config.supabaseUrl;
-  $('#setting-supabase-key').value = config.supabaseKey;
-  const rpc = config.discordRpc || {};
-  $('#setting-rpc-enabled').checked = !!rpc.enabled;
-  $('#setting-rpc-participants').checked = rpc.showParticipants !== false;
-  $('#setting-rpc-github').checked = rpc.showGithubButton !== false;
-  const path = await window.onigiri.getEmotesPath();
-  $('#emotes-file-path').textContent = path;
-  renderCustomEmojiList();
-  $('#settings-nav').querySelectorAll('.settings-nav-item').forEach((b, i) => b.classList.toggle('is-active', i === 0));
-  $('.settings-panels').querySelectorAll('.settings-panel').forEach((p) => { p.hidden = p.dataset.panel !== 'appearance'; });
-  $('#settings-dialog').hidden = false;
+  try {
+    config = await window.onigiri.getConfig();
+    customEmotes = await window.onigiri.getEmotes();
+    $('#setting-background-file').value = config.backgroundFile || '';
+    $('#setting-bg-theming').checked = config.backgroundTheming !== false;
+    $('#setting-blur-amount').value = config.backgroundBlur ?? 24;
+    syncRangeFill($('#setting-blur-amount'));
+    $('#blur-amount-label').textContent = `${config.backgroundBlur ?? 24}px`;
+    $('#setting-parallax').checked = config.backgroundParallax !== false;
+    refreshAppearanceButtons();
+    $('#setting-avatar-url').value = config.avatarUrl;
+    $('#setting-dir').value = config.downloadDir;
+    refreshQualityButtons();
+    refreshAutoDeleteButtons();
+    $('#setting-bg-enabled').checked = config.backgroundEnabled !== false;
+    $('#bg-switch-label').textContent = config.backgroundEnabled !== false ? 'Show background image' : 'Background image hidden';
+    $('#setting-webhook').value = config.webhookUrl;
+    $('#setting-supabase-url').value = config.supabaseUrl;
+    $('#setting-supabase-key').value = config.supabaseKey;
+    const rpc = config.discordRpc || {};
+    $('#setting-rpc-enabled').checked = !!rpc.enabled;
+    $('#setting-rpc-participants').checked = rpc.showParticipants !== false;
+    $('#setting-rpc-github').checked = rpc.showGithubButton !== false;
+    const path = await window.onigiri.getEmotesPath();
+    $('#emotes-file-path').textContent = path;
+    renderCustomEmojiList();
+    // The Extras nav item only exists for those who earned it.
+    $('#settings-nav .settings-nav-item--council').hidden = !config.councilUnlocked;
+    syncEggSettings();
+    showSettingsPanel('appearance');
+  } finally {
+    // The dialog must ALWAYS open, even if one optional control above failed
+    // to populate — a dead settings button is worse than a half-filled panel.
+    $('#settings-dialog').hidden = false;
+  }
+}
+
+function showSettingsPanel(panelName) {
+  $('#settings-nav').querySelectorAll('.settings-nav-item').forEach((b) => b.classList.toggle('is-active', b.dataset.panel === panelName));
+  $('.settings-panels').querySelectorAll('.settings-panel').forEach((p) => { p.hidden = p.dataset.panel !== panelName; });
 }
 
 function wireSettings() {
@@ -1679,7 +2153,7 @@ function wireSettings() {
     toast('Reloaded emotes from file');
   });
 
-  // background-image on/off switch (keeps the URL)
+  // background-image on/off switch (keeps the picked file)
   $('#setting-bg-enabled').checked = config.backgroundEnabled !== false;
   $('#setting-bg-enabled').addEventListener('change', async (e) => {
     try {
@@ -1688,7 +2162,35 @@ function wireSettings() {
       applyAppearance();
       const label = $('#bg-switch-label');
       label.textContent = e.target.checked ? 'Show background image' : 'Background image hidden';
-      toast(e.target.checked ? 'Background shown' : 'Background hidden — URL kept');
+      toast(e.target.checked ? 'Background shown' : 'Background hidden — image kept');
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  // "Match theme to background": derives the app palette from the picked
+  // image (matugen-style) and stores it as customTheme = { fromBackground }.
+  // Any preset/import/reset just writes a different customTheme, so the
+  // sources never fight — the switch only controls whether choosing or
+  // changing a background re-derives the theme.
+  $('#setting-bg-theming').addEventListener('change', async (e) => {
+    try {
+      const on = e.target.checked;
+      await window.onigiri.setConfig({ backgroundTheming: on });
+      if (on && bgActive()) {
+        const palette = await window.onigiri.getBackgroundPalette(config.backgroundFile);
+        if (palette.ok) {
+          config = await window.onigiri.setConfig({ customTheme: { fromBackground: palette } });
+          applyAppearance();
+          paintSchemeSwatches();
+        } else {
+          toast(palette.error || "Couldn't read colors from that image.");
+        }
+      } else if (!on && config.customTheme && config.customTheme.fromBackground) {
+        config = await window.onigiri.setConfig({ customTheme: null });
+        applyAppearance();
+        paintSchemeSwatches();
+      }
     } catch (err) {
       toast(err.message);
     }
@@ -1739,9 +2241,11 @@ function wireSettings() {
     const btn = $('#settings-save');
     btn.disabled = true;
     try {
+      const pickedUrl = $('#setting-background-file').value.trim();
+      const bgChanged = pickedUrl !== (config.backgroundFile || '');
       await window.onigiri.setConfig({
         avatarUrl: $('#setting-avatar-url').value.trim(),
-        backgroundUrl: $('#setting-background-url').value.trim(),
+        backgroundFile: pickedUrl,
         backgroundBlur: parseInt($('#setting-blur-amount').value, 10),
         backgroundParallax: $('#setting-parallax').checked,
         downloadDir: $('#setting-dir').value.trim(),
@@ -1754,6 +2258,23 @@ function wireSettings() {
       });
       config = await window.onigiri.getConfig();
       applyAppearance();
+      // A newly picked image (re)derives the theme from it when theming is
+      // on; a cleared one drops the derived theme. Any hand-picked preset
+      // or imported theme survives — theming only acts on its own theme.
+      if (config.backgroundTheming !== false && bgChanged) {
+        if (bgActive()) {
+          const palette = await window.onigiri.getBackgroundPalette(config.backgroundFile);
+          if (palette.ok) {
+            config = await window.onigiri.setConfig({ customTheme: { fromBackground: palette } });
+          } else {
+            toast(palette.error || "Couldn't read colors from that image.");
+          }
+        } else if (config.customTheme && config.customTheme.fromBackground) {
+          config = await window.onigiri.setConfig({ customTheme: null });
+        }
+      }
+      applyAppearance();
+      paintSchemeSwatches();
       refreshConfigNotice();
       closeSettings();
       toast('Settings saved');
@@ -1787,8 +2308,16 @@ function wireAboutLinks() {
       window.onigiri.openExternal(a.href);
     });
   }
-  // Easter-egg anchor — wired and currently a no-op, fill it in later.
-  $('#about-tagline').addEventListener('click', () => { /* reserved */ });
+  // Easter egg: eleven clicks on the tagline unlock the Extras section in
+  // settings (v1.6). Persisted, so it's a one-time ceremony.
+  $('#about-tagline').addEventListener('click', async () => {
+    if (config.councilUnlocked) return;
+    councilClicks += 1;
+    if (councilClicks < 11) return;
+    config = await window.onigiri.setConfig({ councilUnlocked: true });
+    $('#settings-nav .settings-nav-item--council').hidden = false;
+    showSettingsPanel('council');
+  });
 }
 
 // --- About panel: version number + update check against GitHub releases ----

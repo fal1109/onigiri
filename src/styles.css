@@ -38,6 +38,18 @@
   --md-error: #FFB4A9;
   --md-on-error: #680003;
 
+  /* Accent-colored TEXT that stays readable on any theme. Themes only
+     guarantee that --md-primary pairs with --md-on-primary (text ON a
+     primary fill); the raw primary used AS text can land anywhere from
+     ~2:1 against a dark surface (imported/image themes seed it with dark
+     colors) to 15:1. Links, outlined/text buttons and every other
+     accent-colored text use this instead: the current --md-primary pulled
+     toward white in dark mode (toward black in light mode), so contrast
+     against the surface is always high while the hue still reads as the
+     accent. It's a live mix of var(--md-primary), so imported themes and
+     background-matched themes recolor it automatically — no JS involved. */
+  --md-primary-text: color-mix(in srgb, var(--md-primary) 62%, #fff);
+
   --shape-xs: 4px;
   --shape-sm: 8px;
   --shape-md: 12px;
@@ -85,6 +97,10 @@
 
   --md-error: #BA1A1A;
   --md-on-error: #FFFFFF;
+
+  /* Darker take on the accent for text, mirrored from the dark-mode token
+     above — raw primaries are usually too light to read on light surfaces. */
+  --md-primary-text: color-mix(in srgb, var(--md-primary) 65%, #000);
 }
 
 /* A custom theme (Settings → Import theme JSON) overrides these same
@@ -155,11 +171,29 @@ button, input{ font-family: inherit; }
 }
 button.chip{ cursor:pointer; }
 button.chip:hover{ filter:brightness(1.1); }
+
+/* Room-code chip, 'plain' style: a rounded-rectangle pill that just says
+   "Room code: 123456" (see setRoomChip). */
 .chip-quiet{
   background: transparent;
   border-color: var(--md-outline-variant);
   color: var(--md-on-surface-variant);
 }
+
+/* Room-code chip, 'girls' style: the code spelled in pixel-girl digit
+   sprites — the digit pngs ARE the girls holding signboards, so there's no
+   separate girl image beside the code. Top-bar height caps what fits, so
+   the digits (45×100 canvases) render at 44px tall, still well above the
+   old ~36px while the bar keeps breathing room. */
+.room-chip-sprite{
+  display:inline-flex; align-items:flex-end; gap:2px;
+  padding:2px 4px;
+  border:none; background:transparent; cursor:pointer;
+  font-family:inherit; flex-shrink:0;
+}
+.room-chip-sprite:hover{ filter:brightness(1.12); }
+.room-chip-sprite img{ display:block; }
+.room-chip-digit{ width:auto; height:44px; image-rendering:pixelated; }
 
 .icon-btn{
   width:40px; height:40px; border-radius: var(--shape-full);
@@ -188,9 +222,9 @@ button.chip:hover{ filter:brightness(1.1); }
 .btn-filled:disabled{ opacity:.4; cursor:not-allowed; }
 .btn-tonal{ background: var(--md-primary-container); color: var(--md-on-primary-container); }
 .btn-tonal:hover{ box-shadow: var(--elev-1); }
-.btn-outlined{ background: transparent; color: var(--md-primary); border:1px solid var(--md-outline); }
+.btn-outlined{ background: transparent; color: var(--md-primary-text); border:1px solid var(--md-outline); }
 .btn-outlined:hover{ background: color-mix(in srgb, var(--md-primary) 8%, transparent); }
-.btn-text{ background: transparent; color: var(--md-primary); padding:0 12px; }
+.btn-text{ background: transparent; color: var(--md-primary-text); padding:0 12px; }
 .btn-text:hover{ background: color-mix(in srgb, var(--md-primary) 8%, transparent); }
 
 /* ---------------------------------- Setup view -------------------------*/
@@ -231,6 +265,40 @@ button.chip:hover{ filter:brightness(1.1); }
   animation: cookie-spin 15s linear infinite;
 }
 @keyframes cookie-spin{ from{ transform:rotate(0deg); } to{ transform:rotate(360deg); } }
+/* Easter-egg mascot sits exactly where the cookie does — same corner, but
+   NOT spinning: the weeb stickers are full illustrations and lilith is a
+   flipbook animation, so rotating either looks broken. Lilith is sized to
+   blend in with the closet stickers (whose canvases are ~283px tall), so
+   her ~340px-tall art gets the same visual footprint. Both sit flush in
+   the bottom-right corner, not tucked inside it. */
+.setup-cookie-img{
+  position:absolute; right:0; bottom:0;
+  width:250px; height:250px;
+  object-fit:contain;
+  /* The sticker canvases are all different aspect ratios (200×283, 270×152,
+     1080×1080, …), so plain `contain` center-letterboxes each one inside this
+     square box — leaving a random-looking gap on the right and/or bottom that
+     changes with every launch. Anchoring to the box's bottom-right corner
+     keeps the art itself flush against the screen corner instead. */
+  object-position:right bottom;
+}
+/* Council egg: quiet quote pinned to the bottom-left of the home screen.
+   Sits in a barely-there rounded pill — translucent surface tone, muted
+   text — just enough to keep it readable over a background image without
+   drawing attention to itself. */
+.quote-line{
+  position:absolute; left:26px; bottom:18px;
+  max-width:340px;
+  padding:7px 14px;
+  border-radius: var(--shape-full);
+  background: color-mix(in srgb, var(--md-surface-container-high) 68%, transparent);
+  backdrop-filter: blur(4px);
+  color: var(--md-on-surface-variant);
+  font-size:12.5px; font-style:italic;
+  opacity:.92;
+  z-index:1;
+  text-align:left;
+}
 
 .setup-hero{ max-width:560px; text-align:center; margin-bottom:40px; position:relative; z-index:1; }
 .setup-hero h1{
@@ -334,6 +402,12 @@ button.chip:hover{ filter:brightness(1.1); }
 }
 .video-empty-icon{ width:56px; height:56px; fill: var(--md-outline); opacity:.6; }
 .video-empty p{ font-size:13px; margin:0; }
+/* Council egg: shiggy sits perfectly still in place of the plain play
+   glyph while nothing is loaded. The img is display:none unless the panel
+   opts in via .has-egg (renderer toggles it from config). */
+.video-empty-egg{ display:none; width:110px; height:110px; image-rendering:auto; }
+.video-empty.has-egg .video-empty-egg{ display:block; }
+.video-empty.has-egg .video-empty-icon{ display:none; }
 
 /* Custom playback control bar — replaces native <video controls> entirely
    so play/pause/seek can genuinely be host/DJ-only while volume and time
@@ -402,6 +476,13 @@ button.chip:hover{ filter:brightness(1.1); }
    just not draggable) — volume and the time text are untouched by this. */
 .video-wrap.no-control #play-pause-btn{ display:none; }
 .video-wrap.no-control .player-seek-track{ cursor:default; pointer-events:none; }
+
+/* Captions toggle — same size family as the other control-bar icons. The
+   active state tints it the primary color so "on" reads at a glance. */
+.cc-btn.is-active{ color: var(--md-primary-text); }
+.cc-btn.is-active svg path{ fill: currentColor; }
+/* Keep rendered cues subtle and out of the way of the chat dock. */
+video::cue{ background: rgba(0,0,0,.65); color:#fff; font-size: 0.9em; }
 
 .stage-toolbar{ display:flex; gap:10px; flex-shrink:0; }
 .url-input{
@@ -505,10 +586,19 @@ button.chip:hover{ filter:brightness(1.1); }
 .participant-chip:hover{ background: var(--md-surface-container-high); }
 .participant-dot, .participant-avatar{
   width:26px; height:26px; border-radius:50%; flex-shrink:0;
-  transition: transform .15s ease;
+  transition: transform .15s ease, filter .2s ease, opacity .2s ease;
 }
-.participant-dot{ background: var(--md-primary); }
+.participant-dot{ background: var(--md-primary); display:flex; align-items:center; justify-content:center; overflow:hidden; }
 .participant-avatar{ object-fit:cover; }
+/* Person glyph inside the dot for users without an avatar image — same
+   color family, so it reads as a silhouette rather than a sticker. */
+.participant-dot-glyph{ width:16px; height:16px; fill: color-mix(in srgb, var(--md-on-primary) 78%, transparent); }
+/* While any video is still downloading, every icon dims — the room isn't
+   ready to watch. Hovering a chip lightens its icon back up. */
+.participant-chip.is-buffering .participant-dot,
+.participant-chip.is-buffering .participant-avatar{ filter:brightness(.45) saturate(.8); opacity:.85; }
+.participant-chip.is-buffering:hover .participant-dot,
+.participant-chip.is-buffering:hover .participant-avatar{ filter:brightness(1.05) saturate(1); opacity:1; }
 .participant-chip:hover .participant-dot,
 .participant-chip:hover .participant-avatar{ transform:scale(1.08); }
 .participant-chip-name{
@@ -521,7 +611,7 @@ button.chip:hover{ filter:brightness(1.1); }
 }
 .participant-chip-dj{
   font-size:9px; font-weight:700; letter-spacing:.4px;
-  color: var(--md-primary); margin-left:4px;
+  color: var(--md-primary-text); margin-left:4px;
 }
 
 .chat-dock-log{
@@ -731,10 +821,18 @@ input[type="range"]::-moz-range-thumb{
 .md-switch input:checked + .md-switch-track .md-switch-thumb{ transform:translateX(16px); background: var(--md-on-primary, #fff); }
 .md-switch input:focus-visible + .md-switch-track{ outline:2px solid var(--md-primary); outline-offset:2px; }
 
+/* About panel — redesigned after the user's Penpot mock: boxed cards,
+   lowercase section headings, pill-shaped update button, wide catbox
+   wordmark. Colors all follow the app theme; only the shapes/layout
+   come from the mock. */
+.settings-panel[data-panel="about"] .panel-subheading{
+  text-transform:lowercase; font-size:15px; font-weight:400;
+  letter-spacing:0; opacity:1; margin:20px 0 8px;
+}
 .about-card{
   display:flex; align-items:center; gap:14px;
-  background: var(--md-surface-container-high);
-  border-radius: var(--shape-md);
+  background: var(--md-surface-container-low);
+  border-radius: var(--shape-lg);
   padding:16px;
 }
 .about-avatar{ width:64px; height:64px; border-radius:var(--shape-md); object-fit:cover; flex:none; }
@@ -746,7 +844,7 @@ input[type="range"]::-moz-range-thumb{
   text-align:left; cursor:pointer; border-radius:var(--shape-sm);
 }
 .about-tagline:hover{ opacity:1; text-decoration:underline dotted; }
-.about-site{ display:inline-block; font-size:12.5px; margin-top:6px; color:var(--md-primary); text-decoration:none; }
+.about-site{ display:inline-block; font-size:12.5px; margin-top:6px; color:var(--md-primary-text); text-decoration:none; }
 .about-site:hover{ text-decoration:underline; }
 .about-github{ color:var(--md-on-surface); opacity:.85; display:flex; padding:8px; border-radius:var(--shape-full); transition:background .15s ease; }
 .about-github:hover{ background:var(--md-surface-container-highest); opacity:1; }
@@ -756,46 +854,22 @@ input[type="range"]::-moz-range-thumb{
 .about-update-row{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
 .about-version{ font-size:13.5px; font-weight:600; font-variant-numeric: tabular-nums; }
 .about-update-status{ font-size:12.5px; color: var(--md-on-surface-variant); flex:1; min-width:0; }
-.about-update-status.is-ok{ color:#43a047; }
-.about-update-status.is-outdated{ color: var(--md-primary); font-weight:500; }
+.about-update-status.is-ok{ color:#3fff45; }
+.about-update-status.is-outdated{ color: var(--md-primary-text); font-weight:500; }
 .about-update-status.is-error{ color: var(--md-error); }
+/* "check for updates" — the mock's translucent pill, tinted with the
+   theme primary and pushed to the right edge of the version row. */
+.settings-panel[data-panel="about"] #check-updates-btn{
+  margin-left:auto;
+  background: color-mix(in srgb, var(--md-primary) 15%, transparent);
+  border:none; color: var(--md-primary-text);
+}
+.settings-panel[data-panel="about"] #check-updates-btn:hover{
+  background: color-mix(in srgb, var(--md-primary) 25%, transparent);
+  box-shadow:none;
+}
 
 /* ---------------------------------- v1.5 ---------------------------------*/
-
-/* Host playlist builder (setup screen) — a plain "Link" input with a big
-   rounded plus button beside it; rows keep the order in which links were
-   added, because that order becomes the room's starting queue. */
-.playlist-rows{ display:flex; flex-direction:column; gap:4px; margin-bottom:8px; }
-.playlist-row{
-  display:flex; align-items:center; gap:8px;
-  background: var(--md-surface-container-low);
-  border-radius: var(--shape-sm);
-  padding:6px 8px;
-}
-.playlist-row-order{ font-size:11.5px; color: var(--md-on-surface-variant); flex-shrink:0; min-width:16px; }
-.playlist-row-url{
-  flex:1; min-width:0; font-size:12.5px;
-  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-}
-.playlist-row-remove{
-  width:22px; height:22px; border-radius:50%; border:none; cursor:pointer;
-  background: var(--md-surface-container-high); color: var(--md-on-surface-variant);
-  font-size:13px; line-height:1; flex-shrink:0;
-  display:flex; align-items:center; justify-content:center;
-}
-.playlist-row-remove:hover{ background: var(--md-error); color: var(--md-on-error); }
-.playlist-add-row{ display:flex; gap:8px; }
-.playlist-add-row input{ flex:1; }
-.playlist-add-btn{
-  width:44px; height:44px; flex-shrink:0;
-  border-radius: var(--shape-md);
-  border:none; cursor:pointer;
-  background: var(--md-primary); color: var(--md-on-primary);
-  display:flex; align-items:center; justify-content:center;
-  transition: box-shadow .15s ease, filter .15s ease;
-}
-.playlist-add-btn:hover{ box-shadow: var(--elev-1); filter:brightness(1.05); }
-.playlist-add-btn svg{ width:24px; height:24px; fill:currentColor; }
 
 /* Dropdown selects (auto-delete) — styled to match the text fields. The
    native arrow can't be repositioned, so the select is appearance:none'd and
@@ -817,32 +891,117 @@ input[type="range"]::-moz-range-thumb{
 /* Upload button in the stage toolbar */
 #upload-video-btn{ flex-shrink:0; }
 
+/* Extras — hidden nav item until the About tagline easter egg
+   unlocks it; the panel holds the easter-egg switches. */
+.settings-nav-item--council{ font-style:italic; }
+/* Extras panel: roomier vertical rhythm between the egg options. */
+.settings-panel[data-panel="council"] .field{ margin-bottom:28px; }
+
 /* About → Services credit for litterbox.catbox.moe. */
 .about-credit{
   display:flex; flex-direction:column; gap:4px;
-  background: var(--md-surface-container-high);
-  border-radius: var(--shape-md);
+  background: var(--md-surface-container-low);
+  border-radius: var(--shape-lg);
   padding:12px 14px;
 }
 .about-credit-head{ display:flex; align-items:center; gap:14px; }
-/* Logo sits in a big squircle tile (same 35% radius as the setup-screen
-   squircle button) on a lighter surface so it reads against the card.
-   Two variants ship: catbox.png for light mode, catbox_darkmode.png for
-   dark — swapped off the theme attribute the app sets on :root. */
+/* Wide catbox wordmark straight on the card, like the mock. Light/dark
+   variants swap off the theme attribute the app sets on :root, so the
+   right one reads against the themed surface. */
 .about-credit-img{
-  width:64px; height:64px; padding:12px;
+  width:auto; height:46px; padding:0;
   object-fit:contain;
-  background: var(--md-surface-bright);
-  border-radius:35%;
   flex-shrink:0;
 }
 .about-credit-img--dark{ display:none; }
 :root[data-theme="dark"] .about-credit-img--light{ display:none; }
 :root[data-theme="dark"] .about-credit-img--dark{ display:block; }
 .about-credit-line{ font-size:12.5px; line-height:1.5; }
-.about-credit-line a{ color: var(--md-primary); }
+.about-credit-line a, .about-credit-note a{ color: var(--md-primary-text); }
 .about-credit-note{ font-size:11.5px; opacity:.75; font-style:italic; }
 
 ::-webkit-scrollbar{ width:10px; height:10px; }
 ::-webkit-scrollbar-thumb{ background: var(--md-surface-container-highest); border-radius: var(--shape-full); }
 ::-webkit-scrollbar-track{ background: transparent; }
+
+/* ------------------------------- Launch splash -------------------------- */
+/* Full-viewport sheet shown the moment the app opens. Solid color is the
+   themed surface nudged off its exact value — near enough to feel like the
+   app, different enough that the sweep is unmistakable. The logo pops in,
+   holds, then the whole splash sweeps away toward the bottom-right corner,
+   its 45° edge traveling from the top-left corner down to the bottom-right
+   one (same geometry as the reference recording). Built entirely from
+   compositor-friendly transforms: the sheet is a surface skewed -45° whose
+   top edge IS the wipe diagonal, so translating it down along the skew axis
+   moves that edge corner-to-corner; the brand rides the same axis just
+   ahead of the edge. */
+.launch-splash{
+  position:fixed; inset:0; z-index:50;
+  overflow:hidden;        /* clips the sheet while it slides off */
+  pointer-events:none;    /* pure decoration — never blocks the UI underneath */
+}
+
+/* The wipe surface. skewY(-45deg) turns its top edge into the 45° diagonal
+   through the top-left corner; at rest the sheet fills everything below
+   that diagonal (the whole viewport). Sliding it down its own axis pushes
+   the diagonal edge from the top-left corner to the bottom-right one. */
+.launch-splash-sheet{
+  position:absolute; top:0; left:0;
+  width:100vw; height:calc(105vw + 100vh + 2px);
+  transform-origin: 0 0;
+  transform: translate3d(0, 0, 0) skewY(-45deg);
+  transition: transform .6s cubic-bezier(.55,0,.7,.35);
+  /* Same recipe as --md-surface, nudged per mode so the reveal reads.
+     color-mix keeps custom imported themes recoloring it. */
+  background: var(--md-surface-container-lowest, #16120F);
+}
+:root[data-theme="dark"] .launch-splash-sheet{ background: color-mix(in srgb, var(--md-surface) 86%, white); }
+:root[data-theme="light"] .launch-splash-sheet{ background: color-mix(in srgb, var(--md-surface) 92%, black); }
+
+/* Wipe target: push the sheet's diagonal edge from the top-left corner
+   down to the bottom-right one (and past it, to clear antialiasing). */
+.launch-splash.is-wiping .launch-splash-sheet{
+  transform: translate3d(0, calc(100vh + 100vw + 8px), 0) skewY(-45deg);
+}
+
+/* Brand rides the same diagonal during the sweep so it clings to the
+   leading edge like the reference. The pop-in animation runs on a nested
+   wrapper so its scale/opacity never fight the riding transform. */
+.launch-splash-brand{
+  position:absolute; left:50%; top:50%;
+  translate: -50% -50%;
+  transform: translate3d(0, 0, 0);
+  transition: transform .6s cubic-bezier(.55,0,.7,.35);
+}
+.launch-splash.is-wiping .launch-splash-brand{
+  /* Drift at exactly 45° down-right — the sheet's own travel direction —
+     far enough to clear every aspect ratio by sweep end. */
+  transform: translate3d(calc(50vw + 50vh + 40px), calc(50vw + 50vh + 40px), 0);
+}
+.launch-splash-brand-inner{
+  display:flex; align-items:center; gap:16px; /* logo + name inline */
+  animation: splash-brand-in .55s cubic-bezier(.2,.9,.3,1.2) both;
+}
+.launch-splash-logo{
+  width:120px; height:120px; object-fit:contain;
+  filter: drop-shadow(0 6px 18px rgba(0,0,0,.35));
+}
+.launch-splash-name{
+  font-family: var(--font-display);
+  font-weight:600; font-size:30px; letter-spacing:.5px;
+  color: var(--md-on-surface);
+}
+@keyframes splash-brand-in{
+  from{ opacity:0; transform:scale(.7); }
+  to{ opacity:1; transform:scale(1); }
+}
+
+/* Failsafe: if the renderer's orchestration never fires, the splash still
+   gets out of the way on its own. Generous margin: the real wipe starts at
+   ~0.9s and finishes by ~1.6s, so this only ever rescues a broken renderer.
+   Runs in parallel with the JS-timed wipe — whichever lands first wins. */
+.launch-splash{ animation: splash-failsafe 4s steps(1,end) 1 forwards; }
+@keyframes splash-failsafe{
+  0%, 94%{ opacity:1; }
+  100%{ opacity:0; visibility:hidden; }
+}

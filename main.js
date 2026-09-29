@@ -1,4 +1,5 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, net } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, net, nativeImage } = require('electron');
+const { pathToFileURL, fileURLToPath } = require('url');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -29,15 +30,32 @@ function defaultConfig() {
     avatarUrl: '',
     themeMode: 'dark',
     colorScheme: 'salmon',
-    backgroundUrl: '',
+    // Background image, picked from local storage (stored as a file:// URL —
+    // the old remote-URL input is gone). backgroundTheming derives the app's
+    // colors from that image, matugen-style.
+    backgroundFile: '',
     backgroundEnabled: true,
+    backgroundTheming: true,
     backgroundBlur: 24,
     backgroundParallax: true,
     customTheme: null,
     downloadQuality: 'best',
     // 'never' | 'watched' | '5h' | '10h' | '12h' | '24h' | '2d' | '4d' | '7d'
     autoDelete: 'never',
-    discordRpc: { enabled: false, showParticipants: true, showGithubButton: true }
+    discordRpc: { enabled: false, showParticipants: true, showGithubButton: true },
+    // Extras easter eggs: a master switch plus per-feature
+    // overrides. Master off wins regardless of the individual flags, and
+    // any flag left unset means the feature is on.
+    easterEggs: { enabled: true, openingSound: true, quotes: true, shiggy: true },
+    // Home-screen mascot: a set id (a build/mascots subfolder paired with
+    // the same-named build/sounds folder — 'lilith', 'mayushi', …) or
+    // 'cookie' (the original spinner).
+    mascotStyle: 'lilith',
+    // Last greeting sound played, so each launch picks a different one.
+    lastOpeningSound: '',
+    // Room-code chip style: 'plain' (text pill) or 'girls' (pixel girls
+    // holding digit signs, one per code digit).
+    roomCodeStyle: 'plain'
   };
 }
 
@@ -56,6 +74,10 @@ function saveConfig(cfg) {
 }
 
 let config = loadConfig();
+
+// The greeting sound plays the moment the app opens — before any click — so
+// Chromium's autoplay blocker has to be explicitly waved through.
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
 // ---------------------------------------------------------------------------
 // Emotes — kept in their own plain JSON file (not the main config) so
@@ -84,6 +106,70 @@ function saveEmotes(list) {
 }
 
 let emotes = loadEmotes();
+
+// ---------------------------------------------------------------------------
+// Quotes — same plain-JSON-file pattern as the emotes above, so they
+// stay trivially hand-editable (and out of the main config):
+//   [{ "text": "…", "by": "rui" }, …]
+// The renderer keeps its own built-in fallback; this file, when present,
+// replaces that list entirely. Lives in the project's build/ folder (and in
+// the packaged asar's resources dir once built) instead of userData, so it
+// ships and versions with the app. Any quotes file from the old userData
+// location is migrated over on first run so nothing hand-edited is lost.
+// ---------------------------------------------------------------------------
+const QUOTES_PATH = path.join(__dirname, 'build', 'onigiri-quotes.json');
+const LEGACY_QUOTES_PATH = path.join(app.getPath('userData'), 'onigiri-quotes.json');
+(function migrateQuotesFile() {
+  try {
+    if (fs.existsSync(LEGACY_QUOTES_PATH) && !fs.existsSync(QUOTES_PATH)) {
+      fs.mkdirSync(path.dirname(QUOTES_PATH), { recursive: true });
+      fs.copyFileSync(LEGACY_QUOTES_PATH, QUOTES_PATH);
+    }
+  } catch { /* migration is best-effort; seeding below still covers us */ }
+})();
+
+function loadQuotes() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(QUOTES_PATH, 'utf-8'));
+    if (Array.isArray(parsed)) {
+      return parsed.filter((q) => q && typeof q.text === 'string' && q.text.trim());
+    }
+  } catch { /* first run, or the file was deleted — nothing to load */ }
+  return null;
+}
+
+// Seed the file with the built-in quotes on first run so there's
+// always a document to edit — this is exactly why the quotes live in a
+// hand-editable file at all.
+function seedQuotesFile() {
+  const seed = [
+    { by: 'rui', text: 'one day i will crush bush with my big and heavy trust' },
+    { by: 'rui', text: 'my motivation to do pushups is to give the strongest plaps' },
+    { by: 'rui', text: 'just keep my desire, dont know where you will cum' },
+    { by: 'rui', text: 'the lich and the witch, and the audacity of this bitch' },
+    { by: 'rui', text: 'i mistakenly deleted hall of fame' },
+    { by: 'rui', text: 'oh nyo, it COMES HERE' },
+    { by: 'fal', text: 'i guess nier took my virginity for my first aaa game' },
+    { by: 'fal', text: 'apparently women have taste buds down there, hence the flavoured condoms' },
+    { by: 'fal', text: 'time to bust all over my room!' },
+    { by: 'fal', text: "never thought i'd see kaiki feeding her meat" },
+    { by: 'fal', text: 'integration is hard, but im harder' },
+    { by: 'light', text: 'im hard' },
+    { by: 'light', text: 'im back ely gave me her milk' },
+    { by: 'light', text: 'so i ate a shit ton of garlic and spices and shit to fight cold so i nutted 13 times' },
+    { by: 'light', text: 'i like dark stuff' },
+    { by: 'light', text: 'incest is wincest' }
+  ];
+  try {
+    fs.mkdirSync(path.dirname(QUOTES_PATH), { recursive: true });
+    fs.writeFileSync(QUOTES_PATH, JSON.stringify(seed, null, 2));
+  } catch { /* unwritable userData — quotes just stay built-in */ }
+  return seed;
+}
+
+function currentQuotes() {
+  return loadQuotes() || seedQuotesFile();
+}
 
 // ---------------------------------------------------------------------------
 // Window
@@ -254,10 +340,13 @@ function getSupabaseClient() {
   return supabaseClient;
 }
 
+// Room codes are 6 digits (000000-999999), shown as plain text in the
+// top-bar chip. 1M codes is plenty for friend groups; hostRoom retries on
+// the (vanishingly rare) chance of landing on a code that already has a
+// live room.
 function randomRoomCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no ambiguous-looking characters
   let code = '';
-  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  for (let i = 0; i < 6; i++) code += Math.floor(Math.random() * 10);
   return code;
 }
 
@@ -376,22 +465,24 @@ function subscribeToRoom(code, username) {
   });
 }
 
-function hostRoom(username, playlistUrls = []) {
+function hostRoom(username) {
   stopEverything();
   role = 'host';
   originalHostUsername = username;
   currentUsername = username;
   sawInitialPresenceSync = false;
-  // Keep order exactly as entered: queueAdd appends, so seeding sequentially
-  // preserves "first added plays first".
-  const playlist = (Array.isArray(playlistUrls) ? playlistUrls : [])
-    .map((u) => String(u || '').trim())
-    .filter(Boolean);
-  const code = randomRoomCode();
-  return subscribeToRoom(code, username).then(() => {
-    for (const url of playlist) queueAdd(url);
-    return { code };
-  });
+  const attempt = (triesLeft) => {
+    const code = randomRoomCode();
+    return subscribeToRoom(code, username).then(() => {
+      return { code };
+    }).catch((err) => {
+      // Supabase rejects a second channel with the same name, which is how a
+      // taken code shows up — pick another one instead of failing the host.
+      if (triesLeft > 0 && /duplicate|exists/i.test(err && err.message)) return attempt(triesLeft - 1);
+      throw err;
+    });
+  };
+  return attempt(3);
 }
 
 function joinRoom(code, username) {
@@ -399,7 +490,24 @@ function joinRoom(code, username) {
   role = 'client';
   currentUsername = username;
   sawInitialPresenceSync = false;
-  return subscribeToRoom(code.trim().toUpperCase(), username);
+  return subscribeToRoom(code.trim().toUpperCase(), username).then(async () => {
+    // Room-existence check: Supabase happily subscribes us to a channel
+    // nobody ever created, which used to let anyone type a random code and
+    // sit in an "empty room" as its (only) member. Rooms only exist while
+    // someone is in them, so after the first presence sync, "nobody else
+    // here" means the room was never real — bail out instead.
+    const deadline = Date.now() + 5000;
+    while (!sawInitialPresenceSync && channel && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    if (!channel) throw new Error('Left the room.');
+    const others = Object.values(channel.presenceState()).flat()
+      .filter((p) => p.username !== username);
+    if (!others.length) {
+      stopEverything(); // unsubscribe — never leave a phantom session open
+      throw new Error('Room not found — double-check the code with your host.');
+    }
+  });
 }
 
 function broadcastEvent(event, payload) {
@@ -551,6 +659,13 @@ function resolveYtDlp() {
 
 function resolveFfmpeg() {
   return bundledBin(process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg', 'ffmpeg') || 'ffmpeg';
+}
+
+// ffprobe ships alongside ffmpeg in every distribution channel this app
+// supports (winget/pip/bundled), so probing subtitles is always available
+// wherever downloads already work.
+function resolveFfprobe() {
+  return bundledBin(process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe', 'ffprobe') || 'ffprobe';
 }
 
 // --- health probes (shared by the first-run checklist and `health:check`) ---
@@ -958,6 +1073,71 @@ ipcMain.handle('config:set', (_e, partial) => {
   return config;
 });
 
+// Extras easter-egg assets. The renderer can't read the packed
+// asar (build/mascots, build/sounds ship inside it), so it asks for the
+// listings and file:// URLs over IPC.
+//
+// A mascot SET is a character: a build/mascots/<id>/ folder of images paired
+// with a build/sounds/<id>/ folder of that character's voice lines (the
+// pairing is what makes the opening greeting feel spoken by the mascot).
+// Future sets only need matching folders — no code change. The flat
+// build/mascots/closet dir is a legacy sticker pile, not a character; it's
+// still served (mapped to id 'closet', no sound) but is deliberately left
+// out of the picker.
+ipcMain.handle('eggs:get-assets', () => {
+  const mascotsRoot = path.join(__dirname, 'build', 'mascots');
+  const soundsRoot = path.join(__dirname, 'build', 'sounds');
+  let sets = {};
+  let closet = [];
+  try {
+    for (const entry of fs.readdirSync(mascotsRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name === 'closet') continue;
+      const id = entry.name;
+      let images = [];
+      try {
+        images = fs.readdirSync(path.join(mascotsRoot, id))
+          .filter((f) => /\.(png|jpe?g|webp|gif)$/i.test(f))
+          .sort()
+          .map((f) => pathToFileURL(path.join(mascotsRoot, id, f)).href);
+      } catch {}
+      if (!images.length) continue;
+      let sounds = [];
+      try {
+        sounds = fs.readdirSync(path.join(soundsRoot, id))
+          .filter((f) => /\.(ogg|oga|mp3|wav)$/i.test(f))
+          .sort()
+          .map((f) => pathToFileURL(path.join(soundsRoot, id, f)).href);
+      } catch {} // a set without sounds still shows its mascot
+      sets[id] = { images, sounds };
+    }
+  } catch {}
+  try {
+    closet = fs.readdirSync(path.join(mascotsRoot, 'closet'))
+      .filter((f) => f.toLowerCase().endsWith('.png'))
+      .sort()
+      .map((f) => pathToFileURL(path.join(mascotsRoot, 'closet', f)).href);
+  } catch {}
+  return { sets, closet };
+});
+
+// Room-code chip assets (build/digits/digit-0..9.png), same packing story
+// as the egg mascots: the renderer can't read the asar itself. The 'girls'
+// chip style draws one digit png per code character — the digit pngs ARE
+// the girls (pixel girls holding signboards). The closet mascots aren't
+// part of the chip; the closet dir is only read for the egg mascots above
+// (lilith/ holds her Load1/2/3 frames, not stickers).
+ipcMain.handle('digits:get-assets', () => {
+  const digitsDir = path.join(__dirname, 'build', 'digits');
+  const digits = {};
+  try {
+    for (let d = 0; d <= 9; d++) {
+      const file = path.join(digitsDir, `digit-${d}.png`);
+      if (fs.existsSync(file)) digits[d] = pathToFileURL(file).href;
+    }
+  } catch {}
+  return { digits };
+});
+
 ipcMain.handle('emotes:get', () => emotes);
 
 ipcMain.handle('emotes:add', (_e, { name, url }) => {
@@ -990,6 +1170,8 @@ ipcMain.handle('emotes:reload', () => {
 
 ipcMain.handle('emotes:path', () => EMOTES_PATH);
 
+ipcMain.handle('quotes:get', () => currentQuotes());
+
 ipcMain.handle('dialog:choose-dir', async () => {
   // No BrowserWindow passed as parent on purpose: passing one makes the
   // native dialog OS-modal to the app window, so if the desktop's file
@@ -1012,6 +1194,74 @@ const THEME_KEYS = [
   '--md-secondary', '--md-on-secondary', '--md-tertiary', '--md-on-tertiary'
 ];
 const HEX_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
+// Background image picker: native dialog → absolute path. The renderer
+// stores it as a file:// URL (same shape the old remote-URL input produced,
+// so CSS <url()> semantics are unchanged).
+ipcMain.handle('background:choose', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    // Backgrounds are usually wallpaper-style images, so start the picker in
+    // the OS Pictures folder instead of wherever it landed last time.
+    defaultPath: app.getPath('pictures'),
+    filters: [{ name: 'Image', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif'] }]
+  });
+  if (result.canceled || !result.filePaths[0]) return { ok: false, canceled: true }; 
+  return { ok: true, path: result.filePaths[0], url: pathToFileURL(result.filePaths[0]).href };
+});
+
+// Palette extraction, matugen-style: the background image becomes the app's
+// theme. Uses Electron's bundled nativeImage (sharp's fixed deps can't load
+// inside the asar), scaling to a small buffer and histogramming the pixels.
+ipcMain.handle('background:palette', async (_e, imageUrl) => {
+  try {
+    if (typeof imageUrl !== 'string' || !imageUrl.startsWith('file://')) {
+      throw new Error('Background image must be a local file.');
+    }
+    let img = nativeImage.createFromPath(fileURLToPath(imageUrl));
+    if (img.isEmpty()) throw new Error('Could not read that image.');
+    // Animated gifs keep only the first frame here — fine for a palette.
+    const size = img.getSize();
+    const maxSide = Math.max(size.width, size.height) || 1;
+    if (maxSide > 220) {
+      const scale = 220 / maxSide;
+      img = img.resize({
+        width: Math.max(1, Math.round(size.width * scale)),
+        height: Math.max(1, Math.round(size.height * scale))
+      });
+    }
+    const w = img.getSize().width, h = img.getSize().height;
+    const buf = img.getBitmap(); // BGRA on every platform Electron ships
+    const bins = new Map(); // 5-bit-per-channel quantization → [count, r, g, b]
+    for (let i = 0; i < w * h * 4; i += 4) {
+      const a = buf[i + 3];
+      if (a < 125) continue;
+      const b = buf[i], g = buf[i + 1], r = buf[i + 2];
+      const key = ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
+      const bin = bins.get(key);
+      if (bin) { bin[0]++; bin[1] += r; bin[2] += g; bin[3] += b; }
+      else bins.set(key, [1, r, g, b]);
+    }
+    const colors = [...bins.values()]
+      .map(([n, r, g, b]) => {
+        const rr = r / n, gg = g / n, bb = b / n;
+        const max = Math.max(rr, gg, bb), min = Math.min(rr, gg, bb);
+        const chroma = max - min;
+        // Yellow hues read far brighter than they feel — same tone-mapping
+        // idea matugen applies to its chroma weights.
+        const luma = 0.299 * rr + 0.587 * gg + 0.114 * bb;
+        const weight = n * (0.05 + chroma / 255) / (0.25 + luma / 255);
+        return { hex: '#' + [rr, gg, bb].map((c) => Math.round(c).toString(16).padStart(2, '0')).join(''), weight };
+      })
+      .sort((x, y) => y.weight - x.weight);
+    if (!colors.length) throw new Error('Image has no visible pixels.');
+    const accent = colors[0].hex;
+    const distinct = colors.filter((c) => c.hex !== accent).slice(0, 2).map((c) => c.hex);
+    return { ok: true, accent, secondary: distinct[0] || accent, tertiary: distinct[1] || distinct[0] || accent };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
 
 ipcMain.handle('theme:import', async () => {
   const result = await dialog.showOpenDialog({
@@ -1036,9 +1286,9 @@ ipcMain.handle('theme:import', async () => {
   }
 });
 
-ipcMain.handle('room:host', async (_e, { username, playlistUrls }) => {
+ipcMain.handle('room:host', async (_e, { username }) => {
   try {
-    const { code } = await hostRoom(username, playlistUrls || []);
+    const { code } = await hostRoom(username);
     activeRoomCode = code;
     updateDiscordRpc();
     return { ok: true, code };
@@ -1102,6 +1352,116 @@ ipcMain.handle('video:upload', async (_e, { filePath }) => {
 
 // The player's current source URL, for auto-delete bookkeeping.
 const watchState = { currentUrl: null };
+
+// ---------------------------------------------------------------------------
+// Captions — yt-dlp merges embedded subtitle tracks into the mp4/mkv it
+// downloads, so most files already carry captions. Chromium can't render
+// embedded tracks by itself, but ffmpeg converts them to WebVTT on demand;
+// the player feeds that through a <track> element. ffmpeg must be present
+// for this to work (same dependency downloads already have).
+// ---------------------------------------------------------------------------
+
+// ffprobe lists embedded subtitle streams as JSON; empty list = no captions.
+function probeSubtitleTracks(filePath) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(resolveFfprobe(), [
+        '-v', 'error',
+        '-select_streams', 's',
+        '-show_entries', 'stream=index:stream_tags=language',
+        '-of', 'json',
+        filePath,
+      ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch {
+      return resolve([]);
+    }
+    let out = '';
+    let settled = false;
+    const done = (tracks) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(tracks);
+    };
+    const timer = setTimeout(() => { try { child.kill(); } catch {} done([]); }, 8000);
+    child.stdout.on('data', (c) => { out += c; });
+    child.on('error', () => done([]));
+    child.on('close', () => {
+      try {
+        const streams = JSON.parse(out).streams || [];
+        done(streams.map((s) => ({
+          streamIndex: s.index,
+          lang: (s.tags && s.tags.language ? String(s.tags.language) : '').trim(),
+        })));
+      } catch {
+        done([]);
+      }
+    });
+  });
+}
+
+// Track list for the caption picker; empty array = the UI hides the button.
+ipcMain.handle('video:subtitle-tracks', async (_e, { filePath }) => {
+  if (typeof filePath !== 'string' || !filePath) return [];
+  const tracks = await probeSubtitleTracks(filePath);
+  return tracks.map((t, i) => ({
+    id: `s${t.streamIndex}`,
+    label: t.lang || `Track ${i + 1}`,
+    lang: t.lang || undefined,
+    index: i,
+  }));
+});
+
+// Extract the chosen track as WebVTT (ffmpeg's native subtitle converter)
+// and return the raw VTT text — the renderer wraps it in a blob URL for its
+// <track> element, since Chromium can refuse file:// subtitle loads. Cached
+// per file+track in memory so re-enabling captions is instant.
+const subtitleTextCache = new Map(); // "filePath|trackId" -> VTT text
+
+ipcMain.handle('video:extract-subtitle', async (_e, { filePath, trackId }) => {
+  if (typeof filePath !== 'string' || typeof trackId !== 'string') throw new Error('Bad caption request.');
+  const key = `${filePath}|${trackId}`;
+  const cached = subtitleTextCache.get(key);
+  if (cached) return cached;
+
+  const streamIndex = parseInt(trackId.replace(/^s/, ''), 10);
+  if (!Number.isFinite(streamIndex)) throw new Error('Unknown subtitle track.');
+  const outPath = path.join(os.tmpdir(), 'onigiri-captions', `${crypto.randomBytes(8).toString('hex')}.vtt`);
+
+  await new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawn(resolveFfmpeg(), [
+        '-y', '-v', 'error',
+        '-i', filePath,
+        '-map', `0:${streamIndex}`,
+        '-c:s', 'webvtt',
+        outPath,
+      ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (err) {
+      return reject(new Error(`Could not start ffmpeg (${err.message}).`));
+    }
+    let errText = '';
+    child.stderr.on('data', (c) => { errText += c; });
+    const timer = setTimeout(() => { try { child.kill(); } catch {} reject(new Error('Caption extraction timed out.')); }, 20000);
+    child.on('error', (err) => { clearTimeout(timer); reject(new Error(`ffmpeg failed: ${err.message}`)); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0 && fs.existsSync(outPath)) resolve();
+      else reject(new Error(errText.trim().split('\n').pop() || `ffmpeg exited with code ${code}`));
+    });
+  });
+
+  let text;
+  try {
+    text = fs.readFileSync(outPath, 'utf-8');
+  } finally {
+    try { fs.unlinkSync(outPath); } catch { /* temp file cleanup is best-effort */ }
+  }
+  subtitleTextCache.set(key, text);
+  return text;
+});
 
 // Playback bookkeeping for auto-delete: 'start' remembers which URL the
 // player is currently on, 'done' fires when that video ends (ended event).
