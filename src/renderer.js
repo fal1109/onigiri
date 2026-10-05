@@ -47,6 +47,12 @@ const BUILTIN_EMOTES = [
 const IMAGE_URL_RE = /^https?:\/\/\S+\.(png|jpe?g|gif|webp)(\?\S*)?$/i;
 const looksLikeImageUrl = (text) => IMAGE_URL_RE.test(text.trim());
 
+// Wallpaper/background files that are videos rather than images — the same
+// extension list main.js uses to collect wallpaper files. These play as
+// looping muted backgrounds instead of a CSS background-image.
+const VIDEO_URL_RE = /\.(mp4|m4v|webm|mov|ogv|mkv)(\?\S*)?$/i;
+const isVideoUrl = (url) => VIDEO_URL_RE.test(url || '');
+
 let config = null;
 let customEmotes = [];
 let role = null; // 'host' | 'client' — who created vs joined the room; display-only now
@@ -305,6 +311,82 @@ function applyEasterEggs() {
   applyShiggyEgg();
 }
 
+// Built-in wallpaper collections (Extras → Wallpapers). Two folders ship
+// inside the app (build/wallpapers/fal and /rui — see that folder's README);
+// main.js lists their images and video clips over IPC and each collection
+// renders as a drop-down with a 3-column grid. Clicking a thumbnail persists
+// it as the background right away — no Save needed — since nothing else is
+// being edited. Videos preview as their first frame and play as looping
+// muted backgrounds once applied.
+async function renderWallpaperCollections() {
+  const wrap = $('#wallpaper-collections');
+  if (!wrap) return;
+  let collections = {};
+  try { collections = await window.onigiri.getWallpapers(); } catch {}
+  wrap.innerHTML = '';
+  for (const [cat, urls] of Object.entries(collections || {})) {
+    const box = document.createElement('div');
+    box.className = 'wallpaper-collection';
+    const head = document.createElement('button');
+    head.type = 'button';
+    head.className = 'wp-collection-head';
+    head.innerHTML = `<span class="wp-collection-name">${cat}</span><span class="wp-collection-count">${urls.length}</span>`;
+    const grid = document.createElement('div');
+    grid.className = 'wallpaper-grid';
+    grid.hidden = true;
+    if (!urls.length) {
+      const empty = document.createElement('div');
+      empty.className = 'wp-collection-empty';
+      empty.textContent = 'Nothing here yet — drop images or videos into this collection\'s folder.';
+      grid.appendChild(empty);
+    } else {
+      for (const url of urls) {
+        const thumb = document.createElement('button');
+        thumb.type = 'button';
+        thumb.className = 'wp-thumb' + (config.backgroundFile === url ? ' is-active' : '');
+        thumb.title = 'Apply this wallpaper';
+        // Videos preview as their first frame (preload=metadata), images as
+        // the usual <img>.
+        const media = isVideoUrl(url) ? document.createElement('video') : document.createElement('img');
+        media.src = url;
+        if (isVideoUrl(url)) {
+          media.muted = true;
+          media.preload = 'metadata';
+          media.playsInline = true;
+        } else {
+          media.loading = 'lazy';
+        }
+        media.alt = '';
+        thumb.appendChild(media);
+        thumb.addEventListener('click', async () => {
+          try {
+            config = await window.onigiri.setConfig({ backgroundFile: url, backgroundEnabled: true });
+            $('#setting-background-file').value = url;
+            $('#setting-bg-enabled').checked = true;
+            $('#bg-switch-label').textContent = 'Show background';
+            applyBackgroundLayer();
+            applySetupDecorEggs();
+            wrap.querySelectorAll('.wp-thumb.is-active').forEach((b) => b.classList.remove('is-active'));
+            thumb.classList.add('is-active');
+            toast('Wallpaper applied');
+          } catch (err) {
+            toast(err.message || "Couldn't apply the wallpaper.");
+          }
+        });
+        grid.appendChild(thumb);
+      }
+    }
+    head.addEventListener('click', () => {
+      const opening = grid.hidden;
+      grid.hidden = !opening;
+      box.classList.toggle('is-open', opening);
+    });
+    box.appendChild(head);
+    box.appendChild(grid);
+    wrap.appendChild(box);
+  }
+}
+
 function syncEggSettings() {
   const egg = eggFlags();
   $('#setting-eggs-enabled').checked = !!egg.enabled;
@@ -449,6 +531,16 @@ function hexToHsl(hex) {
   return [h * 360, s * 100, l * 100];
 }
 
+// WCAG relative luminance of a #rrggbb color — used to pick on-colors that
+// actually read on a given button fill (white on mid/dark fills, near-black
+// on bright ones like the yellow and green seeds).
+function hexLuma(hex) {
+  const lin = (c) => { const v = c / 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+  return 0.2126 * lin(parseInt(hex.slice(1, 3), 16))
+    + 0.7152 * lin(parseInt(hex.slice(3, 5), 16))
+    + 0.0722 * lin(parseInt(hex.slice(5, 7), 16));
+}
+
 function hslToHex(h, s, l) {
   h /= 360; s /= 100; l /= 100;
   const hue2rgb = (p, q, t) => {
@@ -499,19 +591,30 @@ function buildImageThemeTokens(palette, mode) {
   return tokens;
 }
 
-function buildThemeTokens(seedHex, mode) {
+function buildThemeTokens(seedHex, mode, primaryTone) {
   const [hue, satPct, seedL] = hexToHsl(seedHex);
   const dark = mode !== 'light';
-  const onSeed = seedL > 60 ? '#1A1A1A' : '#FFFFFF';
 
   let primary, onPrimary, primaryContainer, onPrimaryContainer;
   if (dark) {
-    primary = seedHex;
-    onPrimary = onSeed;
-    primaryContainer = hslToHex(hue, Math.min(satPct, 55), Math.max(seedL - 22, 14));
-    onPrimaryContainer = hslToHex(hue, Math.min(satPct, 40), Math.min(seedL + 35, 92));
+    // Three-tone hierarchy (feedback): surfaces darkest, buttons a mid tone
+    // (second brightest) so whatever text sits on them stays readable, and
+    // text roles closest to white. Neon seeds (yellow/green/cyan presets)
+    // get pulled down to that mid band instead of glowing as button fills.
+    // A per-preset primaryTone (PRESET_PRIMARY_TONE) swaps the generic clamp
+    // for an explicitly paler { s, l } when even the clamped band still
+    // reads too hot for that seed.
+    const tone = primaryTone && primaryTone.dark;
+    primary = tone
+      ? hslToHex(hue, Math.min(satPct, tone.s), tone.l)
+      : hslToHex(hue, Math.min(satPct, 85), Math.min(Math.max(seedL, 38), 56));
+    onPrimary = hexLuma(primary) > 0.4 ? '#1A1A1A' : '#FFFFFF';
+    primaryContainer = hslToHex(hue, Math.min(satPct, 55), Math.min(Math.max(seedL - 25, 14), 42));
+    onPrimaryContainer = hslToHex(hue, Math.min(satPct, 30), 90);
   } else {
-    primary = hslToHex(hue, Math.min(satPct, 65), Math.min(seedL, 42));
+    // Mirrored in light mode: text darkest, buttons a mid-dark tone, the
+    // lightest surfaces at the bottom of the stack.
+    primary = hslToHex(hue, Math.min(satPct, 70), Math.min(Math.max(seedL, 34), 46));
     onPrimary = '#FFFFFF';
     primaryContainer = hslToHex(hue, Math.min(satPct, 45), 88);
     onPrimaryContainer = hslToHex(hue, Math.min(satPct, 55), 20);
@@ -582,13 +685,22 @@ const PRESET_THEMES = {
   fouco: '#83FCFF',
   kallen: '#F99FE3',
   green: '#AEFA87',
-  morphean: '#465189',
-  miku: '#37C0D1'
+  morphean: '#465189'
 };
 
 const PRESET_NAMES = {
   asuka: 'Asuka', lilith: 'Lilith', sartre: 'Sartre', fouco: 'Fouco',
-  kallen: 'Kallen', green: 'Green', morphean: 'Morphean Paradox', miku: 'Miku'
+  kallen: 'Kallen', green: 'Green', morphean: 'Morphean Paradox'
+};
+
+// Per-preset dark-mode button-fill overrides ({ s, l } replacing the generic
+// saturation/lightness clamp in buildThemeTokens). The clamp pulls every
+// neon seed into the same vivid mid band, which still reads as a glowing
+// highlight for the brightest seeds — sartre yellow and kallen pink get a
+// paler, softer fill instead.
+const PRESET_PRIMARY_TONE = {
+  sartre: { dark: { s: 60, l: 76 } },
+  kallen: { dark: { s: 60, l: 76 } }
 };
 
 // config.customTheme is either: null (no theme, pure CSS defaults), a seed
@@ -602,8 +714,14 @@ function applyCustomTheme(theme) {
   THEME_KEYS.forEach((k) => root.style.removeProperty(k));
   if (!theme) return;
   const mode = config.themeMode === 'light' ? 'light' : 'dark';
+  // A string seed may be one of the presets — resolve its per-preset button
+  // tone so saved configs pick the override up too (the picker stores plain
+  // seed hexes, so matching is by value, not by key).
+  const presetKey = typeof theme === 'string'
+    ? Object.keys(PRESET_THEMES).find((k) => PRESET_THEMES[k] === theme)
+    : null;
   const tokens = typeof theme === 'string'
-    ? buildThemeTokens(theme, mode)
+    ? buildThemeTokens(theme, mode, presetKey && PRESET_PRIMARY_TONE[presetKey])
     : theme && theme.fromBackground
       ? buildImageThemeTokens(theme.fromBackground, mode)
       : theme;
@@ -611,32 +729,59 @@ function applyCustomTheme(theme) {
 }
 
 // A background shows when a local file is picked and not switched off.
-const bgActive = () => !!(config.backgroundFile && config.backgroundEnabled !== false);
+const bgActive = (url) => !!((url !== undefined ? url : config.backgroundFile)
+  && config.backgroundEnabled !== false);
+
+// Paint the setup background layer from a file:// URL: images go on the
+// layer's background-image, videos become the muted looping <video> child
+// (which the layer's blur filter and parallax transform already cover).
+// Pass a URL to preview an unsaved pick (or '' to clear); without an
+// argument the current config decides.
+function applyBackgroundLayer(previewUrl) {
+  const bg = $('#setup-bg');
+  const video = $('#setup-bg-video');
+  const url = previewUrl !== undefined ? previewUrl : config.backgroundFile;
+  if (!bgActive(url)) {
+    bg.hidden = true;
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+    return;
+  }
+  bg.hidden = false;
+  if (isVideoUrl(url)) {
+    bg.style.backgroundImage = '';
+    if (video.getAttribute('src') !== url) {
+      video.setAttribute('src', url);
+      video.play().catch(() => {}); // muted + autoplay, but belt and suspenders
+    }
+    video.hidden = false;
+  } else {
+    if (video.getAttribute('src')) {
+      video.pause();
+      video.removeAttribute('src');
+      video.load(); // release the decoder when an image takes over
+    }
+    video.hidden = true;
+    bg.style.backgroundImage = `url("${url}")`;
+  }
+  bg.style.filter = `blur(${config.backgroundBlur ?? 24}px)`;
+}
 
 function applyAppearance() {
   document.documentElement.dataset.theme = config.themeMode || 'dark';
   applyCustomTheme(config.customTheme);
 
-  const bg = $('#setup-bg');
-  // cookie is an <svg> element — SVGElement doesn't reliably support the
-  // .hidden IDL property the way HTMLElement does, so setting it directly
-  // can silently no-op. setAttribute/removeAttribute always works.
-  // backgroundEnabled (Material switch) toggles the image without wiping the file.
-  if (bgActive()) {
-    bg.style.backgroundImage = `url("${config.backgroundFile}")`;
-    bg.style.filter = `blur(${config.backgroundBlur ?? 24}px)`;
-    bg.hidden = false;
-  } else {
-    bg.hidden = true;
-  }
+  applyBackgroundLayer();
   applySetupDecorEggs();
   setBackgroundTransform(0, 0);
 }
 
-// scale(1.1) keeps the blurred edges from ever showing the layer's own
-// boundary; the translate is the parallax offset (0,0 when disabled/idle).
+// No scale — the wallpaper shows at its native size (the layer's own
+// inset:-30px bleed already hides blur edges); the translate is the parallax
+// offset (0,0 when disabled/idle).
 function setBackgroundTransform(x, y) {
-  $('#setup-bg').style.transform = `scale(1.1) translate(${x}px, ${y}px)`;
+  $('#setup-bg').style.transform = `translate(${x}px, ${y}px)`;
 }
 
 function handleParallaxMouseMove(e) {
@@ -680,7 +825,8 @@ function renderSchemeSwatches() {
 function paintSchemeSwatches() {
   const mode = config.themeMode === 'light' ? 'light' : 'dark';
   $('#scheme-swatches').querySelectorAll('.scheme-swatch').forEach((btn) => {
-    const t = buildThemeTokens(PRESET_THEMES[btn.dataset.preset], mode);
+    const preset = btn.dataset.preset;
+    const t = buildThemeTokens(PRESET_THEMES[preset], mode, PRESET_PRIMARY_TONE[preset]);
     // conic runs clockwise from 12 o'clock: top-right, bottom-right,
     // bottom-left, top-left — matching the reference palette circles.
     btn.style.setProperty('--swatch',
@@ -757,10 +903,7 @@ function wireAppearance() {
       if (res.canceled) return;
       if (!res.ok) { toast(res.error || "Couldn't open the file picker — type the path in manually instead."); return; }
       $('#setting-background-file').value = res.url;
-      const bg = $('#setup-bg');
-      bg.style.backgroundImage = `url("${res.url}")`;
-      bg.hidden = false;
-      applySetupDecorEggs();
+      applyBackgroundLayer(res.url); // live preview before Save
     } catch (err) {
       toast(err.message || "Couldn't open the file picker.");
     } finally {
@@ -770,9 +913,7 @@ function wireAppearance() {
 
   $('#background-clear-btn').addEventListener('click', () => {
     $('#setting-background-file').value = '';
-    const bg = $('#setup-bg');
-    bg.style.backgroundImage = '';
-    bg.hidden = true;
+    applyBackgroundLayer('');
     applySetupDecorEggs();
   });
 }
@@ -1904,6 +2045,10 @@ function closeChatInput() {
   $('#chat-form').hidden = true;
   $('#chat-input').blur();
   closeEmojiTray();
+  // Leaving chat (Escape) or having just sent — pin the log back to the
+  // newest message so the latest line is what you see.
+  const log = $('#chat-log');
+  log.scrollTop = log.scrollHeight;
   rescheduleAllFades();
 }
 
@@ -2078,7 +2223,7 @@ async function openSettings() {
     refreshQualityButtons();
     refreshAutoDeleteButtons();
     $('#setting-bg-enabled').checked = config.backgroundEnabled !== false;
-    $('#bg-switch-label').textContent = config.backgroundEnabled !== false ? 'Show background image' : 'Background image hidden';
+    $('#bg-switch-label').textContent = config.backgroundEnabled !== false ? 'Show background' : 'Background hidden';
     $('#setting-webhook').value = config.webhookUrl;
     $('#setting-supabase-url').value = config.supabaseUrl;
     $('#setting-supabase-key').value = config.supabaseKey;
@@ -2092,6 +2237,7 @@ async function openSettings() {
     // The Extras nav item only exists for those who earned it.
     $('#settings-nav .settings-nav-item--council').hidden = !config.councilUnlocked;
     syncEggSettings();
+    renderWallpaperCollections();
     showSettingsPanel('appearance');
   } finally {
     // The dialog must ALWAYS open, even if one optional control above failed
@@ -2161,7 +2307,7 @@ function wireSettings() {
       config = await window.onigiri.getConfig();
       applyAppearance();
       const label = $('#bg-switch-label');
-      label.textContent = e.target.checked ? 'Show background image' : 'Background image hidden';
+      label.textContent = e.target.checked ? 'Show background' : 'Background hidden';
       toast(e.target.checked ? 'Background shown' : 'Background hidden — image kept');
     } catch (err) {
       toast(err.message);
@@ -2177,7 +2323,11 @@ function wireSettings() {
     try {
       const on = e.target.checked;
       await window.onigiri.setConfig({ backgroundTheming: on });
-      if (on && bgActive()) {
+      if (on && bgActive() && isVideoUrl(config.backgroundFile)) {
+        // Palette extraction reads image pixels only — video wallpapers can
+        // participate in everything else, just not theme derivation.
+        toast('Theme-from-background works with image backgrounds only.');
+      } else if (on && bgActive()) {
         const palette = await window.onigiri.getBackgroundPalette(config.backgroundFile);
         if (palette.ok) {
           config = await window.onigiri.setConfig({ customTheme: { fromBackground: palette } });
@@ -2262,7 +2412,13 @@ function wireSettings() {
       // on; a cleared one drops the derived theme. Any hand-picked preset
       // or imported theme survives — theming only acts on its own theme.
       if (config.backgroundTheming !== false && bgChanged) {
-        if (bgActive()) {
+        if (bgActive() && isVideoUrl(config.backgroundFile)) {
+          // Video backgrounds can't feed the palette extractor — quietly
+          // drop any theme still derived from the previous background.
+          if (config.customTheme && config.customTheme.fromBackground) {
+            config = await window.onigiri.setConfig({ customTheme: null });
+          }
+        } else if (bgActive()) {
           const palette = await window.onigiri.getBackgroundPalette(config.backgroundFile);
           if (palette.ok) {
             config = await window.onigiri.setConfig({ customTheme: { fromBackground: palette } });

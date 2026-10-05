@@ -1120,6 +1120,28 @@ ipcMain.handle('eggs:get-assets', () => {
   return { sets, closet };
 });
 
+// Built-in wallpaper collections (Settings → Extras → Wallpapers). Two
+// categories — fal and rui — read from build/wallpapers/<category>/ so
+// images (and video clips — the renderer plays them as looping muted
+// backgrounds) can be dropped in without touching any code. The renderer
+// can't list the asar itself, so this returns file:// URLs, same story as
+// the egg mascots above.
+ipcMain.handle('wallpapers:get', () => {
+  const root = path.join(__dirname, 'build', 'wallpapers');
+  const collections = {};
+  for (const cat of ['fal', 'rui']) {
+    let files = [];
+    try {
+      files = fs.readdirSync(path.join(root, cat))
+        .filter((f) => /\.(png|jpe?g|webp|gif|avif|bmp|mp4|m4v|webm|mov|ogv|mkv)$/i.test(f))
+        .sort()
+        .map((f) => pathToFileURL(path.join(root, cat, f)).href);
+    } catch {} // missing folder → empty collection
+    collections[cat] = files;
+  }
+  return collections;
+});
+
 // Room-code chip assets (build/digits/digit-0..9.png), same packing story
 // as the egg mascots: the renderer can't read the asar itself. The 'girls'
 // chip style draws one digit png per code character — the digit pngs ARE
@@ -1195,16 +1217,17 @@ const THEME_KEYS = [
 ];
 const HEX_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 
-// Background image picker: native dialog → absolute path. The renderer
+// Background image/video picker: native dialog → absolute path. The renderer
 // stores it as a file:// URL (same shape the old remote-URL input produced,
 // so CSS <url()> semantics are unchanged).
 ipcMain.handle('background:choose', async () => {
   const result = await dialog.showOpenDialog({
     properties: ['openFile'],
-    // Backgrounds are usually wallpaper-style images, so start the picker in
-    // the OS Pictures folder instead of wherever it landed last time.
+    // Backgrounds are usually wallpaper-style images (now also video clips),
+    // so start the picker in the OS Pictures folder instead of wherever it
+    // landed last time.
     defaultPath: app.getPath('pictures'),
-    filters: [{ name: 'Image', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif'] }]
+    filters: [{ name: 'Images & videos', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif', 'mp4', 'm4v', 'webm', 'mov', 'ogv', 'mkv'] }]
   });
   if (result.canceled || !result.filePaths[0]) return { ok: false, canceled: true }; 
   return { ok: true, path: result.filePaths[0], url: pathToFileURL(result.filePaths[0]).href };

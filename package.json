@@ -32,6 +32,7 @@
       "build/shiggy.webp",
       "build/onigiri-quotes.json",
       "build/mascots/**/*",
+      "build/wallpapers/**/*",
       "build/sounds/**/*",
       "build/digits/**/*"
     ],

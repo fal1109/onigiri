@@ -58,7 +58,11 @@
            bleeding off the edge can never expand .setup's own scroll area
            (that was the source of the phantom scrollbars). -->
         <div class="setup-decor" aria-hidden="true">
-          <div id="setup-bg" class="setup-bg" hidden></div>
+          <div id="setup-bg" class="setup-bg" hidden>
+            <!-- Video wallpapers play inside the same blurred layer as image
+                 ones — the video is muted, looping, and never interactive. -->
+            <video id="setup-bg-video" muted loop playsinline hidden></video>
+          </div>
           <!-- Easter-egg mascot: replaces the spinning cookie when the
                council eggs are on (one random pick per launch). -->
           <img id="setup-cookie-img" class="setup-cookie-img" alt="" hidden>
@@ -436,7 +440,7 @@
                 <img class="about-avatar" src="assets/fal.png" alt="fal1109's avatar">
                 <div class="about-info">
                   <div class="about-name">fal1109</div>
-                  <button type="button" id="about-tagline" class="about-tagline">for the onigiri extras</button>
+                  <button type="button" id="about-tagline" class="about-tagline">for the onigiri boomer's council</button>
                   <a class="about-site" href="https://fa11.netlify.app" target="_blank" rel="noopener">fa11.netlify.app</a>
                 </div>
                 <a class="about-github" href="https://github.com/fal1109" target="_blank" rel="noopener" title="github.com/fal1109">
@@ -475,6 +479,11 @@
                     <span class="md-switch-track"><span class="md-switch-thumb"></span></span>
                   </label>
                 </div>
+              </div>
+              <div class="field">
+                <span>Wallpapers</span>
+                <div id="wallpaper-collections" class="wallpaper-collections"></div>
+                <span class="field-hint">Click a wallpaper to apply it as the background instantly.</span>
               </div>
               <div class="field">
                 <span>Room code chip</span>

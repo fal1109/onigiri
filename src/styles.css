@@ -47,8 +47,10 @@
      toward white in dark mode (toward black in light mode), so contrast
      against the surface is always high while the hue still reads as the
      accent. It's a live mix of var(--md-primary), so imported themes and
-     background-matched themes recolor it automatically — no JS involved. */
-  --md-primary-text: color-mix(in srgb, var(--md-primary) 62%, #fff);
+     background-matched themes recolor it automatically — no JS involved.
+     40/60 keeps accent-colored text near-white, per the visibility-first
+     hierarchy (text is the brightest of the theme's three tones). */
+  --md-primary-text: color-mix(in srgb, var(--md-primary) 40%, #fff);
 
   --shape-xs: 4px;
   --shape-sm: 8px;
@@ -247,11 +249,19 @@ button.chip:hover{ filter:brightness(1.1); }
 
 /* Custom background: a separate, oversized, blurred layer behind the
    content rather than blurring .setup itself, so the cards/text stay sharp.
-   Blur amount and parallax offset are both applied inline by JS. */
+   Blur amount and parallax offset are both applied inline by JS. Image
+   wallpapers are the layer's background-image; video wallpapers are the
+   <video> child, which the layer's blur filter and parallax transform
+   cover for free. */
 .setup-bg{
   position:absolute; inset:-30px;
   background-size:cover; background-position:center;
   transition: filter .2s ease;
+}
+.setup-bg video{
+  position:absolute; inset:0;
+  width:100%; height:100%;
+  object-fit:cover;
 }
 .setup-bg::after{
   content:''; position:absolute; inset:0;
@@ -360,6 +370,41 @@ button.chip:hover{ filter:brightness(1.1); }
 .field-row input{ flex:1; }
 .field-row .emote-name-input{ flex:0 0 120px; }
 .field-hint{ display:block; font-size:11px; color: var(--md-on-surface-variant); margin-top:6px; line-height:1.6; }
+
+/* Built-in wallpaper collections (Extras → Wallpapers): one drop-down per
+   collection, each opening a 3-column grid of clickable thumbnails. */
+.wallpaper-collections{ display:flex; flex-direction:column; gap:8px; margin-top:8px; }
+.wp-collection-head{
+  display:flex; align-items:center; justify-content:space-between; gap:8px;
+  width:100%; padding:9px 14px; cursor:pointer;
+  border:1px solid var(--md-outline); border-radius: var(--shape-sm);
+  background: var(--md-surface-container-low); color: var(--md-on-surface);
+  font-size:13.5px; font-family:inherit; text-align:left;
+}
+.wp-collection-head::after{
+  content:''; width:8px; height:8px; flex-shrink:0;
+  border-right:1.5px solid var(--md-on-surface-variant);
+  border-bottom:1.5px solid var(--md-on-surface-variant);
+  transform: rotate(45deg); margin-right:4px;
+  transition: transform .15s ease;
+}
+.wallpaper-collection.is-open .wp-collection-head::after{ transform: rotate(225deg); }
+.wp-collection-head:hover{ background: var(--md-surface-container); }
+.wp-collection-name{ text-transform:capitalize; }
+.wp-collection-count{ color: var(--md-on-surface-variant); font-size:12px; }
+.wallpaper-grid{
+  display:grid; grid-template-columns:repeat(3, 1fr); gap:8px;
+  padding:8px; border-radius: var(--shape-sm);
+  background: var(--md-surface-container-low);
+  max-height:264px; overflow-y:auto;
+  scrollbar-width: thin;
+}
+.wp-thumb{ border:none; padding:0; cursor:pointer; overflow:hidden;
+  aspect-ratio:16/9; border-radius:6px; background:none; }
+.wp-thumb img,.wp-thumb video{ width:100%; height:100%; object-fit:cover; display:block; }
+.wp-thumb:hover{ outline:2px solid var(--md-primary-text); }
+.wp-thumb.is-active{ outline:2px solid var(--md-primary-text); outline-offset:-2px; }
+.wp-collection-empty{ grid-column:1/-1; font-size:12px; color:var(--md-on-surface-variant); padding:4px 2px; }
 
 .segmented{ display:inline-flex; border-radius: var(--shape-full); background: var(--md-surface-container-low); padding:3px; }
 .segmented button{
@@ -615,11 +660,16 @@ video::cue{ background: rgba(0,0,0,.65); color:#fff; font-size: 0.9em; }
 }
 
 .chat-dock-log{
-  display:flex; flex-direction:column; justify-content:flex-end;
-  gap:3px; max-height:150px; overflow:hidden;
+  display:flex; flex-direction:column;
+  gap:3px; max-height:150px; overflow-y:auto;
   transition: max-height .2s ease;
+  /* No justify-content:flex-end here: in a scroll container it pushes the
+     overflow above the start edge, which makes the older messages physically
+     unreachable. New messages are pinned to the bottom in JS instead. */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,.28) transparent;
 }
-.chat-dock.active .chat-dock-log{ max-height:260px; overflow-y:auto; }
+.chat-dock.active .chat-dock-log{ max-height:260px; }
 .chat-line{
   align-self:flex-start; max-width:100%;
   background: color-mix(in srgb, var(--nori) 55%, transparent);

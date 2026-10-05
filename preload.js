@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('onigiri', {
   importTheme: () => ipcRenderer.invoke('theme:import'),
   getEggAssets: () => ipcRenderer.invoke('eggs:get-assets'),
   getDigitAssets: () => ipcRenderer.invoke('digits:get-assets'),
+  getWallpapers: () => ipcRenderer.invoke('wallpapers:get'),
 
   // emotes (own file, separate from config — see README)
   getEmotes: () => ipcRenderer.invoke('emotes:get'),
